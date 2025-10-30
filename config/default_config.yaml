@@ -1,0 +1,88 @@
+# CXL Memory Fault Detection RL Training Configuration
+
+# Environment Configuration
+environment:
+  # Path to MBIST binary (adjust for your environment)
+  mbist_binary_path: "/path/to/mbist_smbus.exe"
+
+  # Memory configuration
+  memory_size: 0x100000000  # 4GB
+
+  # Maximum steps per episode
+  max_episode_steps: 500
+
+  # Safety mode (true = simulation, false = real hardware)
+  safety_mode: true
+
+# Training Configuration
+training:
+  # Total number of training episodes
+  total_episodes: 1000
+
+  # Maximum steps per episode
+  max_steps_per_episode: 500
+
+  # Update agent every N steps
+  update_frequency: 64
+
+  # Evaluate every N episodes
+  evaluation_frequency: 100
+
+  # Save model every N episodes
+  save_frequency: 100
+
+# PPO Agent Configuration
+ppo:
+  # Learning rate
+  learning_rate: 0.0003
+
+  # Discount factor
+  gamma: 0.99
+
+  # GAE lambda
+  gae_lambda: 0.95
+
+  # PPO clip epsilon
+  clip_epsilon: 0.2
+
+  # Entropy coefficient
+  entropy_coef: 0.01
+
+  # Value loss coefficient
+  value_coef: 0.5
+
+  # Batch size for training
+  batch_size: 64
+
+  # Number of epochs per update
+  epochs_per_update: 4
+
+  # Maximum gradient norm
+  max_grad_norm: 0.5
+
+# Exploration Configuration
+exploration:
+  # Initial exploration rate
+  initial_epsilon: 1.0
+
+  # Final exploration rate
+  final_epsilon: 0.1
+
+  # Number of episodes for epsilon decay
+  epsilon_decay_episodes: 500
+
+# Output Configuration
+output:
+  # Directory for saving models
+  model_save_dir: "./models"
+
+  # Directory for saving logs
+  log_dir: "./logs"
+
+  # Experiment name (leave empty for auto-generated timestamp)
+  experiment_name: ""
+
+# Device Configuration
+device:
+  # Device for training ('cuda' or 'cpu', 'auto' for automatic detection)
+  device: "auto"

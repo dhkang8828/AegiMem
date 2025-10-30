@@ -17,6 +17,7 @@ import matplotlib.pyplot as plt
 
 from rl_environment import CXLMemoryRLEnvironment
 from ppo_agent import PPOAgent
+from config_loader import load_config, create_config_from_args, save_config
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -63,32 +64,43 @@ class TrainingConfig:
 
 class Trainer:
     """Main training class"""
-    
-    def __init__(self, config: TrainingConfig):
+
+    def __init__(self, config):
         self.config = config
-        
+
         # Create directories
-        os.makedirs(config.model_save_dir, exist_ok=True)
-        os.makedirs(config.log_dir, exist_ok=True)
-        
+        os.makedirs(config.output.model_save_dir, exist_ok=True)
+        os.makedirs(config.output.log_dir, exist_ok=True)
+
+        # Auto-generate experiment name if not provided
+        if not config.output.experiment_name:
+            config.output.experiment_name = f"cxl_mbist_rl_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
         # Initialize environment
         self.env = CXLMemoryRLEnvironment(
-            mbist_binary_path=config.mbist_binary_path,
-            memory_size=config.memory_size,
-            max_episode_steps=config.max_episode_steps,
-            safety_mode=config.safety_mode
+            mbist_binary_path=config.environment.mbist_binary_path,
+            memory_size=config.environment.memory_size,
+            max_episode_steps=config.environment.max_episode_steps,
+            safety_mode=config.environment.safety_mode
         )
-        
+
+        # Determine device
+        if config.device.device == 'auto':
+            device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        else:
+            device = config.device.device
+
         # Initialize agent
         self.agent = PPOAgent(
             state_shape=(64, 64, 4),
             action_dims=[14, 6, 64, 64],
-            learning_rate=config.learning_rate,
-            gamma=config.gamma,
-            gae_lambda=config.gae_lambda,
-            clip_epsilon=config.clip_epsilon,
-            entropy_coef=config.entropy_coef,
-            value_coef=config.value_coef
+            learning_rate=config.ppo.learning_rate,
+            gamma=config.ppo.gamma,
+            gae_lambda=config.ppo.gae_lambda,
+            clip_epsilon=config.ppo.clip_epsilon,
+            entropy_coef=config.ppo.entropy_coef,
+            value_coef=config.ppo.value_coef,
+            device=device
         )
         
         # Training metrics
@@ -106,12 +118,12 @@ class Trainer:
         
     def train(self):
         """Main training loop"""
-        
-        logger.info(f"Starting training for {self.config.total_episodes} episodes")
-        
+
+        logger.info(f"Starting training for {self.config.training.total_episodes} episodes")
+
         step_count = 0
-        
-        for episode in range(self.config.total_episodes):
+
+        for episode in range(self.config.training.total_episodes):
             episode_start_time = time.time()
             
             # Reset environment
@@ -122,10 +134,10 @@ class Trainer:
             
             done = False
             
-            while not done and episode_length < self.config.max_steps_per_episode:
+            while not done and episode_length < self.config.training.max_steps_per_episode:
                 # Select action with exploration
                 epsilon = self._get_epsilon(episode)
-                
+
                 if np.random.random() < epsilon:
                     # Random exploration
                     action = np.array([
@@ -136,8 +148,10 @@ class Trainer:
                     ])
                     # Ensure end >= start
                     action[3] = max(action[3], action[2])
-                    
-                    action_info = {'log_prob': 0.0}  # Dummy for exploration
+
+                    # Get value estimate even for exploration
+                    value = self.agent.get_value(state)
+                    action_info = {'log_prob': 0.0, 'value': value}
                 else:
                     # Agent action
                     action, action_info = self.agent.select_action(state)
@@ -160,10 +174,10 @@ class Trainer:
                 state = next_state
                 
                 # Update agent periodically
-                if step_count % self.config.update_frequency == 0:
+                if step_count % self.config.training.update_frequency == 0:
                     update_info = self.agent.update(
-                        batch_size=self.config.batch_size,
-                        epochs=self.config.epochs_per_update
+                        batch_size=self.config.ppo.batch_size,
+                        epochs=self.config.ppo.epochs_per_update
                     )
                     if update_info:
                         self.training_losses.append(update_info)
@@ -199,7 +213,7 @@ class Trainer:
                 )
             
             # Evaluation
-            if episode % self.config.evaluation_frequency == 0 and episode > 0:
+            if episode % self.config.training.evaluation_frequency == 0 and episode > 0:
                 eval_result = self._evaluate()
                 self.evaluation_results.append({
                     'episode': episode,
@@ -216,7 +230,7 @@ class Trainer:
                 )
             
             # Save model periodically
-            if episode % self.config.save_frequency == 0 and episode > 0:
+            if episode % self.config.training.save_frequency == 0 and episode > 0:
                 self._save_checkpoint(episode)
             
             # Save training progress
@@ -228,11 +242,11 @@ class Trainer:
     
     def _get_epsilon(self, episode: int) -> float:
         """Get exploration epsilon for current episode"""
-        if episode >= self.config.epsilon_decay_episodes:
-            return self.config.final_epsilon
-        
-        decay_ratio = episode / self.config.epsilon_decay_episodes
-        return self.config.initial_epsilon - (self.config.initial_epsilon - self.config.final_epsilon) * decay_ratio
+        if episode >= self.config.exploration.epsilon_decay_episodes:
+            return self.config.exploration.final_epsilon
+
+        decay_ratio = episode / self.config.exploration.epsilon_decay_episodes
+        return self.config.exploration.initial_epsilon - (self.config.exploration.initial_epsilon - self.config.exploration.final_epsilon) * decay_ratio
     
     def _evaluate(self, num_episodes: int = 5) -> Dict:
         """Evaluate agent performance"""
@@ -272,14 +286,14 @@ class Trainer:
     
     def _save_best_model(self):
         """Save best performing model"""
-        filepath = os.path.join(self.config.model_save_dir, f"{self.config.experiment_name}_best.pt")
+        filepath = os.path.join(self.config.output.model_save_dir, f"{self.config.output.experiment_name}_best.pt")
         self.agent.save_model(filepath)
-    
+
     def _save_checkpoint(self, episode: int):
         """Save training checkpoint"""
-        filepath = os.path.join(self.config.model_save_dir, f"{self.config.experiment_name}_ep_{episode}.pt")
+        filepath = os.path.join(self.config.output.model_save_dir, f"{self.config.output.experiment_name}_ep_{episode}.pt")
         self.agent.save_model(filepath)
-        
+
         # Save training state
         checkpoint_data = {
             'episode': episode,
@@ -288,18 +302,18 @@ class Trainer:
             'episode_faults_found': self.episode_faults_found,
             'best_reward': self.best_reward,
             'best_faults_found': self.best_faults_found,
-            'config': self.config.__dict__
+            'config': self.config.to_dict()
         }
-        
-        checkpoint_path = os.path.join(self.config.log_dir, f"{self.config.experiment_name}_checkpoint_{episode}.json")
+
+        checkpoint_path = os.path.join(self.config.output.log_dir, f"{self.config.output.experiment_name}_checkpoint_{episode}.json")
         with open(checkpoint_path, 'w') as f:
             json.dump(checkpoint_data, f, indent=2)
     
     def _save_training_progress(self):
         """Save training progress plots"""
-        
+
         fig, axes = plt.subplots(2, 2, figsize=(15, 10))
-        fig.suptitle(f'Training Progress - {self.config.experiment_name}')
+        fig.suptitle(f'Training Progress - {self.config.output.experiment_name}')
         
         # Episode rewards
         axes[0, 0].plot(self.episode_rewards)
@@ -332,16 +346,16 @@ class Trainer:
             axes[1, 1].legend()
         
         plt.tight_layout()
-        
-        plot_path = os.path.join(self.config.log_dir, f"{self.config.experiment_name}_progress.png")
+
+        plot_path = os.path.join(self.config.output.log_dir, f"{self.config.output.experiment_name}_progress.png")
         plt.savefig(plot_path)
         plt.close()
     
     def _save_final_results(self):
         """Save final training results"""
-        
+
         results = {
-            'config': self.config.__dict__,
+            'config': self.config.to_dict(),
             'final_performance': {
                 'best_reward': self.best_reward,
                 'best_faults_found': self.best_faults_found,
@@ -357,7 +371,7 @@ class Trainer:
             'agent_stats': self.agent.get_training_stats()
         }
         
-        results_path = os.path.join(self.config.log_dir, f"{self.config.experiment_name}_final_results.json")
+        results_path = os.path.join(self.config.output.log_dir, f"{self.config.output.experiment_name}_final_results.json")
         with open(results_path, 'w') as f:
             json.dump(results, f, indent=2)
         
@@ -369,30 +383,43 @@ class Trainer:
 
 def main():
     parser = argparse.ArgumentParser(description='Train CXL Memory Fault Detection RL Agent')
-    parser.add_argument('--episodes', type=int, default=1000, help='Number of training episodes')
-    parser.add_argument('--safety-mode', action='store_true', default=True, help='Use simulation mode for safety')
-    parser.add_argument('--mbist-path', type=str, 
-                       default="/home/dhkang/data2/mbist_sample_code-gen2_es/bin/mbist_smbus.exe",
-                       help='Path to MBIST binary')
-    parser.add_argument('--experiment-name', type=str, help='Custom experiment name')
-    
+    parser.add_argument('--config', type=str, help='Path to config YAML file')
+    parser.add_argument('--episodes', type=int, help='Number of training episodes (overrides config)')
+    parser.add_argument('--safety-mode', action='store_true', help='Use simulation mode (overrides config)')
+    parser.add_argument('--no-safety-mode', action='store_true', help='Disable safety mode (overrides config)')
+    parser.add_argument('--mbist-path', type=str, help='Path to MBIST binary (overrides config)')
+    parser.add_argument('--experiment-name', type=str, help='Custom experiment name (overrides config)')
+    parser.add_argument('--learning-rate', type=float, help='Learning rate (overrides config)')
+    parser.add_argument('--batch-size', type=int, help='Batch size (overrides config)')
+
     args = parser.parse_args()
-    
-    # Create config
-    config = TrainingConfig()
-    config.total_episodes = args.episodes
-    config.safety_mode = args.safety_mode
-    config.mbist_binary_path = args.mbist_path
-    
-    if args.experiment_name:
-        config.experiment_name = args.experiment_name
-    
+
+    # Load config
+    config = create_config_from_args(args)
+
+    # Handle safety mode flags
+    if args.no_safety_mode:
+        config.environment.safety_mode = False
+    elif args.safety_mode:
+        config.environment.safety_mode = True
+
+    # Save config to log directory
+    os.makedirs(config.output.log_dir, exist_ok=True)
+    if not config.output.experiment_name:
+        config.output.experiment_name = f"cxl_mbist_rl_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
+    config_save_path = os.path.join(config.output.log_dir, f"{config.output.experiment_name}_config.yaml")
+    save_config(config, config_save_path)
+
     logger.info(f"Starting training with config:")
-    logger.info(f"  Episodes: {config.total_episodes}")
-    logger.info(f"  Safety Mode: {config.safety_mode}")
-    logger.info(f"  MBIST Path: {config.mbist_binary_path}")
-    logger.info(f"  Experiment: {config.experiment_name}")
-    
+    logger.info(f"  Episodes: {config.training.total_episodes}")
+    logger.info(f"  Safety Mode: {config.environment.safety_mode}")
+    logger.info(f"  MBIST Path: {config.environment.mbist_binary_path}")
+    logger.info(f"  Experiment: {config.output.experiment_name}")
+    logger.info(f"  Device: {config.device.device}")
+    logger.info(f"  Learning Rate: {config.ppo.learning_rate}")
+    logger.info(f"  Config saved to: {config_save_path}")
+
     # Create trainer and start training
     trainer = Trainer(config)
     trainer.train()

@@ -123,7 +123,7 @@ class CXLMemoryRLEnvironment(gym.Env):
         self.consecutive_fails = 0
         
         # Initialize with some random fault patterns (simulation)
-        if not self.safety_mode:  # Only in simulation mode
+        if self.safety_mode:  # Only in simulation mode
             num_faults = np.random.randint(1, 10)
             for _ in range(num_faults):
                 fault_row = np.random.randint(0, 64)

@@ -141,18 +141,21 @@ class PPOAgent:
         
     def select_action(self, state: np.ndarray, deterministic: bool = False) -> Tuple[np.ndarray, Dict]:
         """Select action given current state"""
-        
+
         state_tensor = torch.FloatTensor(state).to(self.device)
-        
+
         with torch.no_grad():
             algorithm_logits, pattern_logits, start_logits, end_logits = self.policy_net(state_tensor)
-            
+
+            # Get value estimate
+            value = self.value_net(state_tensor).squeeze().item()
+
             # Create distributions
             algorithm_dist = torch.distributions.Categorical(logits=algorithm_logits)
             pattern_dist = torch.distributions.Categorical(logits=pattern_logits)
             start_dist = torch.distributions.Categorical(logits=start_logits)
             end_dist = torch.distributions.Categorical(logits=end_logits)
-            
+
             if deterministic:
                 algorithm = torch.argmax(algorithm_logits, dim=-1)
                 pattern = torch.argmax(pattern_logits, dim=-1)
@@ -163,33 +166,34 @@ class PPOAgent:
                 pattern = pattern_dist.sample()
                 start_region = start_dist.sample()
                 end_region = end_dist.sample()
-            
+
             # Ensure end_region >= start_region
             end_region = torch.max(end_region, start_region)
-            
+
             # Calculate log probabilities
             log_prob_algorithm = algorithm_dist.log_prob(algorithm)
             log_prob_pattern = pattern_dist.log_prob(pattern)
             log_prob_start = start_dist.log_prob(start_region)
             log_prob_end = end_dist.log_prob(end_region)
-            
+
             total_log_prob = log_prob_algorithm + log_prob_pattern + log_prob_start + log_prob_end
-            
+
             action = np.array([
                 algorithm.item(),
                 pattern.item(),
                 start_region.item(),
                 end_region.item()
             ])
-            
+
             action_info = {
                 'log_prob': total_log_prob.item(),
+                'value': value,  # Add value estimate
                 'algorithm_prob': torch.softmax(algorithm_logits, dim=-1)[0, algorithm].item(),
                 'pattern_prob': torch.softmax(pattern_logits, dim=-1)[0, pattern].item(),
-                'entropy': (algorithm_dist.entropy() + pattern_dist.entropy() + 
+                'entropy': (algorithm_dist.entropy() + pattern_dist.entropy() +
                            start_dist.entropy() + end_dist.entropy()).item()
             }
-            
+
         return action, action_info
     
     def get_value(self, state: np.ndarray) -> float:
@@ -402,35 +406,35 @@ class PPOBuffer:
     def __init__(self, capacity: int = 10000):
         self.capacity = capacity
         self.buffer = deque(maxlen=capacity)
-    
+        self.value_net = None  # Will be set by agent
+
     def store(self, state: np.ndarray, action: np.ndarray, reward: float,
               next_state: np.ndarray, done: bool, action_info: Dict):
         """Store experience"""
-        
+
         experience = {
             'state': state,
             'action': action,
             'reward': reward,
             'next_state': next_state,
             'done': done,
-            'log_prob': action_info['log_prob']
+            'log_prob': action_info['log_prob'],
+            'value': action_info.get('value', 0.0)  # Store value estimate
         }
-        
+
         self.buffer.append(experience)
     
     def get_batch(self) -> Tuple:
         """Get all experiences as batch"""
-        
+
         states = np.array([exp['state'] for exp in self.buffer])
         actions = np.array([exp['action'] for exp in self.buffer])
         rewards = np.array([exp['reward'] for exp in self.buffer])
         next_states = np.array([exp['next_state'] for exp in self.buffer])
         dones = np.array([exp['done'] for exp in self.buffer])
         log_probs = np.array([exp['log_prob'] for exp in self.buffer])
-        
-        # Calculate values (placeholder - would need actual value estimates)
-        values = np.zeros_like(rewards)
-        
+        values = np.array([exp['value'] for exp in self.buffer])
+
         return states, actions, rewards, next_states, dones, log_probs, values
     
     def clear(self):
