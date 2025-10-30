@@ -5,7 +5,9 @@
 이 프로젝트는 삼성전자 CXL Type3 메모리 모듈에서 DRAM Memory Cell 불량을 검출하기 위한 강화학습 기반 테스트 프로그램입니다.
 
 ### 핵심 기술
-- **강화학습**: PPO (Proximal Policy Optimization) 알고리즘
+- **강화학습**:
+  - **PPO** (Proximal Policy Optimization) - Policy-based RL
+  - **DQN** (Deep Q-Network) - Value-based RL with Double DQN
 - **하드웨어**: Montage 컨트롤러의 MBIST 엔진 활용
 - **최적화 목표**: 검출 정확도 향상 및 새로운 불량 패턴 발견
 
@@ -16,15 +18,22 @@ cxl_memory_rl_project/
 ├── src/                    # 소스 코드
 │   ├── rl_environment.py   # 강화학습 환경
 │   ├── ppo_agent.py       # PPO 에이전트
-│   └── train_agent.py     # 훈련 스크립트
+│   ├── dqn_agent.py       # DQN 에이전트
+│   ├── train_agent.py     # PPO 훈련 스크립트
+│   ├── train_dqn.py       # DQN 훈련 스크립트
+│   └── config_loader.py   # 설정 파일 로더
+├── config/                # 설정 파일
+│   └── default_config.yaml
 ├── models/                # 훈련된 모델 저장
 ├── logs/                  # 훈련 로그 및 결과
 ├── data/                  # 데이터 파일
-├── config/                # 설정 파일
 ├── tests/                 # 테스트 코드
 ├── requirements.txt       # Python 의존성
 ├── test_setup.py         # 설정 테스트
-├── test_cuda.py          # CUDA 테스트
+├── quick_test.py         # PPO 빠른 테스트
+├── quick_test_dqn.py     # DQN 빠른 테스트
+├── generate_report.py    # 결과 리포트 생성
+├── DEPLOYMENT_GUIDE.md   # 배포 가이드
 └── README.md             # 프로젝트 문서
 ```
 
@@ -53,26 +62,43 @@ python3 test_cuda.py
 
 ## 사용법
 
-### 1. 기본 훈련 실행
+### 1. PPO 알고리즘으로 훈련
 
 ```bash
 source venv/bin/activate
-python3 src/train_agent.py --episodes 1000 --safety-mode
+python3 src/train_agent.py --config config/default_config.yaml --safety-mode --episodes 1000
 ```
 
-### 2. 실제 하드웨어 테스트 (주의: 안전 모드 해제)
+### 2. DQN 알고리즘으로 훈련 (추천: 시작하기 좋음)
 
 ```bash
-python3 src/train_agent.py --episodes 100 --mbist-path /path/to/mbist_binary
+python3 src/train_dqn.py --config config/default_config.yaml --safety-mode --episodes 1000
 ```
 
-### 3. 훈련 파라미터 설정
+### 3. 실제 하드웨어 테스트 (주의: 안전 모드 해제)
 
 ```bash
-python3 src/train_agent.py \
-    --episodes 2000 \
-    --experiment-name "cxl_optimization_v1" \
-    --safety-mode
+# PPO
+python3 src/train_agent.py --no-safety-mode --mbist-path /path/to/mbist_binary --episodes 500
+
+# DQN
+python3 src/train_dqn.py --no-safety-mode --mbist-path /path/to/mbist_binary --episodes 500
+```
+
+### 4. 빠른 테스트
+
+```bash
+# PPO 테스트
+python3 quick_test.py
+
+# DQN 테스트
+python3 quick_test_dqn.py
+```
+
+### 5. 결과 리포트 생성
+
+```bash
+python3 generate_report.py --log-dir ./logs --format both
 ```
 
 ## 강화학습 환경 설계
@@ -142,6 +168,25 @@ python3 src/train_agent.py \
 - `models/`: 저장된 모델 파일
 - 시각화된 진행 상황 그래프
 
+## 알고리즘 비교
+
+### PPO vs DQN
+
+| 특징 | PPO | DQN |
+|------|-----|-----|
+| **타입** | Policy-based | Value-based |
+| **학습 안정성** | 높음 (Clipping) | 중간 (Target Network) |
+| **샘플 효율성** | 낮음 (On-policy) | 높음 (Off-policy) |
+| **탐색 방법** | Stochastic policy | Epsilon-greedy |
+| **메모리 요구량** | 낮음 | 높음 (Replay Buffer) |
+| **수렴 속도** | 빠름 | 느림 |
+| **추천 사용 시나리오** | 안정적인 학습 필요 시 | 샘플이 비싼 경우 |
+
+### 권장사항
+- **처음 시작**: DQN으로 시작 (구현 단순, 샘플 효율 좋음)
+- **안정성 중시**: PPO 사용
+- **최적 성능**: 두 알고리즘 모두 실험 후 비교
+
 ## 성능 최적화
 
 ### GPU 가속
@@ -151,7 +196,7 @@ python3 src/train_agent.py \
 
 ### 메모리 효율성
 - 배치 처리 최적화
-- 경험 버퍼 관리
+- 경험 버퍼 관리 (DQN)
 - 가중치 공유
 
 ## 문제 해결
