@@ -1,0 +1,14 @@
+# JAX with CUDA 12 support
+# Install these AFTER installing base requirements.txt
+
+# For CUDA 12 (your current setup)
+--find-links https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+jax[cuda12]>=0.4.20
+
+# JAX ecosystem
+flax>=0.7.0
+optax>=0.1.7
+chex>=0.1.82  # Testing utilities for JAX
+
+# Optional: DeepMind's Haiku (alternative to Flax)
+# dm-haiku>=0.0.10
