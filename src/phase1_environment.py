@@ -13,13 +13,13 @@ import time
 
 
 class OperationType(IntEnum):
-    """Memory test operation types"""
-    WRITE_ASC = 0        # ^(W pattern) - Ascending Write only
-    READ_ASC = 1         # ^(R pattern) - Ascending Read & Compare
-    WRITE_DESC = 2       # v(W pattern) - Descending Write only
-    READ_DESC = 3        # v(R pattern) - Descending Read & Compare
-    WRITE_READ_DESC = 4  # v(W pattern, R pattern) - Descending Write then Read
-    WRITE_READ_ASC = 5   # ^(W pattern, R pattern) - Ascending Write then Read
+    """Memory test operation types - All guarantee Write before Read"""
+    WR_ASC_ASC = 0      # [^(W pat), ^(R pat)] - Ascending W → Ascending R
+    WR_DESC_DESC = 1    # [v(W pat), v(R pat)] - Descending W → Descending R
+    WR_ASC_DESC = 2     # [^(W pat), v(R pat)] - Ascending W → Descending R (cross!)
+    WR_DESC_ASC = 3     # [v(W pat), ^(R pat)] - Descending W → Ascending R (cross!)
+    WR_DESC_SINGLE = 4  # [v(W pat, R pat)] - Descending single-pass W+R
+    WR_ASC_SINGLE = 5   # [^(W pat, R pat)] - Ascending single-pass W+R
 
 
 class Phase1Environment(gym.Env):
@@ -27,15 +27,21 @@ class Phase1Environment(gym.Env):
     Phase 1 RL Environment for Pattern Sequence Discovery
 
     Action Space: 1536 discrete actions
-        - 6 operation types:
-          * 0: ^(W pattern) - Ascending Write
-          * 1: ^(R pattern) - Ascending Read
-          * 2: v(W pattern) - Descending Write
-          * 3: v(R pattern) - Descending Read
-          * 4: v(W+R pattern) - Descending Write then Read
-          * 5: ^(W+R pattern) - Ascending Write then Read
+        - 6 operation types (all guarantee Write before Read):
+          * 0: [^(W pat), ^(R pat)] - Ascending W → Ascending R
+          * 1: [v(W pat), v(R pat)] - Descending W → Descending R
+          * 2: [^(W pat), v(R pat)] - Ascending W → Descending R (cross-direction)
+          * 3: [v(W pat), ^(R pat)] - Descending W → Ascending R (cross-direction)
+          * 4: [v(W+R pat)] - Descending single-pass W+R
+          * 5: [^(W+R pat)] - Ascending single-pass W+R
         - 256 data patterns (0x00 ~ 0xFF)
         - Encoding: action = operation_type * 256 + pattern_byte
+
+    Key Features:
+        - No invalid actions (all guarantee Write before Read)
+        - Cross-direction tests (types 2,3) for coupling/address decode faults
+        - Two-pass vs single-pass for retention/disturb testing
+        - Covers March algorithm patterns (March C-, MRAT, etc.)
 
     Observation Space:
         - sequence_history: Last N actions taken
@@ -213,12 +219,12 @@ class Phase1Environment(gym.Env):
 
         # Map operation type to notation
         op_map = {
-            OperationType.WRITE_ASC: f"^(W 0x{pattern:02X})",
-            OperationType.READ_ASC: f"^(R 0x{pattern:02X})",
-            OperationType.WRITE_DESC: f"v(W 0x{pattern:02X})",
-            OperationType.READ_DESC: f"v(R 0x{pattern:02X})",
-            OperationType.WRITE_READ_DESC: f"v(W 0x{pattern:02X}, R 0x{pattern:02X})",
-            OperationType.WRITE_READ_ASC: f"^(W 0x{pattern:02X}, R 0x{pattern:02X})"
+            OperationType.WR_ASC_ASC: f"[^(W 0x{pattern:02X}), ^(R 0x{pattern:02X})]",
+            OperationType.WR_DESC_DESC: f"[v(W 0x{pattern:02X}), v(R 0x{pattern:02X})]",
+            OperationType.WR_ASC_DESC: f"[^(W 0x{pattern:02X}), v(R 0x{pattern:02X})]",
+            OperationType.WR_DESC_ASC: f"[v(W 0x{pattern:02X}), ^(R 0x{pattern:02X})]",
+            OperationType.WR_DESC_SINGLE: f"[v(W 0x{pattern:02X}, R 0x{pattern:02X})]",
+            OperationType.WR_ASC_SINGLE: f"[^(W 0x{pattern:02X}, R 0x{pattern:02X})]"
         }
 
         return op_map[op_type]
@@ -231,13 +237,13 @@ class Phase1Environment(gym.Env):
         """
         Execute pattern test on entire memory
 
-        Performs one of 6 operation types:
-        - WRITE_ASC: ^(W pattern) - Ascending Write
-        - READ_ASC: ^(R pattern) - Ascending Read & Compare
-        - WRITE_DESC: v(W pattern) - Descending Write
-        - READ_DESC: v(R pattern) - Descending Read & Compare
-        - WRITE_READ_DESC: v(W+R pattern) - Descending Write then Read
-        - WRITE_READ_ASC: ^(W+R pattern) - Ascending Write then Read
+        Performs one of 6 operation types (all guarantee Write before Read):
+        - WR_ASC_ASC: [^(W pat), ^(R pat)] - Ascending W → Ascending R
+        - WR_DESC_DESC: [v(W pat), v(R pat)] - Descending W → Descending R
+        - WR_ASC_DESC: [^(W pat), v(R pat)] - Ascending W → Descending R (cross!)
+        - WR_DESC_ASC: [v(W pat), ^(R pat)] - Descending W → Ascending R (cross!)
+        - WR_DESC_SINGLE: [v(W+R pat)] - Descending single-pass W+R
+        - WR_ASC_SINGLE: [^(W+R pat)] - Ascending single-pass W+R
 
         Args:
             operation_type: One of 6 operation types
@@ -246,48 +252,115 @@ class Phase1Environment(gym.Env):
         Returns:
             Dict with test_failed, error_count
         """
-        # Determine direction
-        is_ascending = operation_type in [
-            OperationType.WRITE_ASC,
-            OperationType.READ_ASC,
-            OperationType.WRITE_READ_ASC
-        ]
-
-        # Generate address sequence
-        addresses = self._generate_address_sequence(is_ascending)
-
         # Begin MBIST sequence mode
         self.mbist.begin_sequence()
 
         # Execute based on operation type
-        if operation_type == OperationType.WRITE_ASC or operation_type == OperationType.WRITE_DESC:
-            # Write only: ^(W pattern) or v(W pattern)
-            for rank, bg, ba, row in addresses:
+        if operation_type == OperationType.WR_ASC_ASC:
+            # [^(W pat), ^(R pat)] - Ascending W → Ascending R
+            addresses_asc = self._generate_address_sequence(is_ascending=True)
+
+            # Write pass (ascending)
+            for rank, bg, ba, row in addresses_asc:
                 self.mbist.send_activate(rank, bg, ba, row)
                 for col in range(0, 2048, 16):
                     self.mbist.send_write(rank, bg, ba, row, col, pattern_byte)
                 self.mbist.send_precharge(rank, bg, ba, all_banks=False)
 
-        elif operation_type == OperationType.READ_ASC or operation_type == OperationType.READ_DESC:
-            # Read only: ^(R pattern) or v(R pattern)
-            # Assumes memory was previously written with this pattern
-            for rank, bg, ba, row in addresses:
+            # Read pass (ascending)
+            for rank, bg, ba, row in addresses_asc:
                 self.mbist.send_activate(rank, bg, ba, row)
                 for col in range(0, 2048, 16):
                     self.mbist.send_read(rank, bg, ba, row, col)
                 self.mbist.send_precharge(rank, bg, ba, all_banks=False)
 
-        elif operation_type == OperationType.WRITE_READ_ASC or operation_type == OperationType.WRITE_READ_DESC:
-            # Write then Read: ^(W+R pattern) or v(W+R pattern)
-            # First pass: Write
-            for rank, bg, ba, row in addresses:
+        elif operation_type == OperationType.WR_DESC_DESC:
+            # [v(W pat), v(R pat)] - Descending W → Descending R
+            addresses_desc = self._generate_address_sequence(is_ascending=False)
+
+            # Write pass (descending)
+            for rank, bg, ba, row in addresses_desc:
                 self.mbist.send_activate(rank, bg, ba, row)
                 for col in range(0, 2048, 16):
                     self.mbist.send_write(rank, bg, ba, row, col, pattern_byte)
                 self.mbist.send_precharge(rank, bg, ba, all_banks=False)
 
-            # Second pass: Read (same direction)
-            for rank, bg, ba, row in addresses:
+            # Read pass (descending)
+            for rank, bg, ba, row in addresses_desc:
+                self.mbist.send_activate(rank, bg, ba, row)
+                for col in range(0, 2048, 16):
+                    self.mbist.send_read(rank, bg, ba, row, col)
+                self.mbist.send_precharge(rank, bg, ba, all_banks=False)
+
+        elif operation_type == OperationType.WR_ASC_DESC:
+            # [^(W pat), v(R pat)] - Ascending W → Descending R (cross-direction!)
+            addresses_asc = self._generate_address_sequence(is_ascending=True)
+            addresses_desc = self._generate_address_sequence(is_ascending=False)
+
+            # Write pass (ascending)
+            for rank, bg, ba, row in addresses_asc:
+                self.mbist.send_activate(rank, bg, ba, row)
+                for col in range(0, 2048, 16):
+                    self.mbist.send_write(rank, bg, ba, row, col, pattern_byte)
+                self.mbist.send_precharge(rank, bg, ba, all_banks=False)
+
+            # Read pass (descending)
+            for rank, bg, ba, row in addresses_desc:
+                self.mbist.send_activate(rank, bg, ba, row)
+                for col in range(0, 2048, 16):
+                    self.mbist.send_read(rank, bg, ba, row, col)
+                self.mbist.send_precharge(rank, bg, ba, all_banks=False)
+
+        elif operation_type == OperationType.WR_DESC_ASC:
+            # [v(W pat), ^(R pat)] - Descending W → Ascending R (cross-direction!)
+            addresses_asc = self._generate_address_sequence(is_ascending=True)
+            addresses_desc = self._generate_address_sequence(is_ascending=False)
+
+            # Write pass (descending)
+            for rank, bg, ba, row in addresses_desc:
+                self.mbist.send_activate(rank, bg, ba, row)
+                for col in range(0, 2048, 16):
+                    self.mbist.send_write(rank, bg, ba, row, col, pattern_byte)
+                self.mbist.send_precharge(rank, bg, ba, all_banks=False)
+
+            # Read pass (ascending)
+            for rank, bg, ba, row in addresses_asc:
+                self.mbist.send_activate(rank, bg, ba, row)
+                for col in range(0, 2048, 16):
+                    self.mbist.send_read(rank, bg, ba, row, col)
+                self.mbist.send_precharge(rank, bg, ba, all_banks=False)
+
+        elif operation_type == OperationType.WR_DESC_SINGLE:
+            # [v(W+R pat)] - Descending single-pass W+R
+            addresses_desc = self._generate_address_sequence(is_ascending=False)
+
+            # Single pass: Write then immediately Read at each address
+            for rank, bg, ba, row in addresses_desc:
+                # Write
+                self.mbist.send_activate(rank, bg, ba, row)
+                for col in range(0, 2048, 16):
+                    self.mbist.send_write(rank, bg, ba, row, col, pattern_byte)
+                self.mbist.send_precharge(rank, bg, ba, all_banks=False)
+
+                # Immediate Read
+                self.mbist.send_activate(rank, bg, ba, row)
+                for col in range(0, 2048, 16):
+                    self.mbist.send_read(rank, bg, ba, row, col)
+                self.mbist.send_precharge(rank, bg, ba, all_banks=False)
+
+        elif operation_type == OperationType.WR_ASC_SINGLE:
+            # [^(W+R pat)] - Ascending single-pass W+R
+            addresses_asc = self._generate_address_sequence(is_ascending=True)
+
+            # Single pass: Write then immediately Read at each address
+            for rank, bg, ba, row in addresses_asc:
+                # Write
+                self.mbist.send_activate(rank, bg, ba, row)
+                for col in range(0, 2048, 16):
+                    self.mbist.send_write(rank, bg, ba, row, col, pattern_byte)
+                self.mbist.send_precharge(rank, bg, ba, all_banks=False)
+
+                # Immediate Read
                 self.mbist.send_activate(rank, bg, ba, row)
                 for col in range(0, 2048, 16):
                     self.mbist.send_read(rank, bg, ba, row, col)

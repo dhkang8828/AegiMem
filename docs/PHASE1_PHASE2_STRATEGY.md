@@ -31,14 +31,14 @@ RL Agent에게 물어보기:
 # 1536 Actions = 6 operations × 256 patterns
 action = operation_type * 256 + pattern_byte
 
-# 6가지 Operation Types:
+# 6가지 Operation Types (모두 Write → Read 보장):
 OperationType = {
-    WRITE_ASC: 0        # ^(W pattern) - Ascending Write only
-    READ_ASC: 1         # ^(R pattern) - Ascending Read & Compare
-    WRITE_DESC: 2       # v(W pattern) - Descending Write only
-    READ_DESC: 3        # v(R pattern) - Descending Read & Compare
-    WRITE_READ_DESC: 4  # v(W+R pattern) - Descending Write then Read
-    WRITE_READ_ASC: 5   # ^(W+R pattern) - Ascending Write then Read
+    WR_ASC_ASC: 0      # [^(W pat), ^(R pat)] - Ascending W → Ascending R
+    WR_DESC_DESC: 1    # [v(W pat), v(R pat)] - Descending W → Descending R
+    WR_ASC_DESC: 2     # [^(W pat), v(R pat)] - Ascending W → Descending R (cross!)
+    WR_DESC_ASC: 3     # [v(W pat), ^(R pat)] - Descending W → Ascending R (cross!)
+    WR_DESC_SINGLE: 4  # [v(W pat, R pat)] - Descending single-pass W+R
+    WR_ASC_SINGLE: 5   # [^(W pat, R pat)] - Ascending single-pass W+R
 }
 
 # 256 Data Patterns: 0x00 ~ 0xFF
@@ -73,14 +73,15 @@ step_size = 1  # 순차 접근
 ```python
 # 한 에피소드 = 패턴 시퀀스 (최대 10개)
 episode = [
-    action_0,  # 예: ⇑(W0)
-    action_1,  # 예: ⇑(R0)
-    action_2,  # 예: ⇓(R1)
+    action_0,  # 예: [^(W 0xAA), ^(R 0xAA)] - WR_ASC_ASC with 0xAA
+    action_1,  # 예: [v(W 0x55), v(R 0x55)] - WR_DESC_DESC with 0x55
+    action_2,  # 예: [^(W 0x00, R 0x00)] - WR_ASC_SINGLE with 0x00
     ...
 ]
 
-# 각 action = 전체 메모리 한 번 스캔
-# 시퀀스 = 여러 스캔의 조합
+# 각 action = 전체 메모리 한 번 스캔 (Write → Read)
+# 시퀀스 = 여러 패턴 테스트의 조합
+# March 알고리즘과 동일한 구조!
 ```
 
 ### State Space
