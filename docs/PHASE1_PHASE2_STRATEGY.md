@@ -25,15 +25,25 @@ RL Agent에게 물어보기:
 → 이게 바로 MRAT의 핵심 패턴!
 ```
 
-### Action Space (매우 단순)
+### Action Space
 
 ```python
-# 32 Actions = 2 × 2 × 8
-action = {
-    'direction': 'ASCENDING' | 'DESCENDING',     # 2 choices
-    'operation': 'READ' | 'WRITE',               # 2 choices
-    'pattern': 0-7                               # 8 data patterns
+# 1536 Actions = 6 operations × 256 patterns
+action = operation_type * 256 + pattern_byte
+
+# 6가지 Operation Types:
+OperationType = {
+    WRITE_ASC: 0        # ^(W pattern) - Ascending Write only
+    READ_ASC: 1         # ^(R pattern) - Ascending Read & Compare
+    WRITE_DESC: 2       # v(W pattern) - Descending Write only
+    READ_DESC: 3        # v(R pattern) - Descending Read & Compare
+    WRITE_READ_DESC: 4  # v(W+R pattern) - Descending Write then Read
+    WRITE_READ_ASC: 5   # ^(W+R pattern) - Ascending Write then Read
 }
+
+# 256 Data Patterns: 0x00 ~ 0xFF
+# RL이 효과적인 패턴을 학습으로 발견
+# 예: 0x00, 0xFF, 0x55, 0xAA, 0x33, 0xCC, ...
 
 # 고정 파라미터
 start_address = 0x0
@@ -41,18 +51,21 @@ end_address = ENTIRE_MEMORY  # 전체 영역 스캔
 step_size = 1  # 순차 접근
 ```
 
-### Data Patterns (8가지)
+### 주요 Data Patterns (예시)
 
 ```python
-class DataPattern(IntEnum):
-    ALL_0       = 0  # 0x00000000
-    ALL_1       = 1  # 0xFFFFFFFF
-    CHECKER_AA  = 2  # 0xAAAAAAAA (10101010...)
-    CHECKER_55  = 3  # 0x55555555 (01010101...)
-    WALK_1_L    = 4  # Walking 1 left
-    WALK_1_R    = 5  # Walking 1 right
-    WALK_0_L    = 6  # Walking 0 left
-    WALK_0_R    = 7  # Walking 0 right
+# 전통적 패턴
+0x00 = 0b00000000  # All zeros
+0xFF = 0b11111111  # All ones
+0x55 = 0b01010101  # Checkerboard
+0xAA = 0b10101010  # Inverse checkerboard
+
+# RL이 발견할 수 있는 새로운 패턴
+0x33 = 0b00110011
+0xCC = 0b11001100
+0xF0 = 0b11110000
+0x0F = 0b00001111
+... (총 256가지)
 ```
 
 ### Episode 구조
@@ -138,7 +151,7 @@ faulty_devices = [
 ```python
 for device in faulty_devices:
     env = Phase1Environment(device)
-    agent = DQNAgent(state_dim=..., action_dim=32)
+    agent = DQNAgent(state_dim=..., action_dim=1536)
 
     for episode in range(max_episodes):
         state = env.reset()
@@ -154,21 +167,25 @@ for device in faulty_devices:
             if info['test_failed']:
                 # 성공! 패턴 저장
                 save_successful_pattern(device.id, sequence)
-                print(f"✓ Found pattern for {device.id}: {sequence}")
+                decoded = decode_action(action)
+                print(f"✓ Found pattern for {device.id}: {decoded}")
                 break
 ```
 
 #### 학습 가속
 ```python
-# 32개 action만 있으므로
-# - Epsilon-greedy로 빠른 exploration
+# 1536개 action space
+# - Epsilon-greedy로 exploration
 # - Experience replay로 샘플 효율 극대화
 # - 짧은 에피소드 (최대 10 step)
+# - Action space가 커졌지만 구조화되어 있음:
+#   * Operation type만 6가지
+#   * Pattern은 연속적 (0x00 ~ 0xFF)
 
 예상 학습 시간:
 - 에피소드당: 10 actions × (메모리 스캔 시간)
-- 총 에피소드: 100-1000회
-- Device당 학습: 수 시간~1일
+- 총 에피소드: 1000-5000회 (action space 증가로 더 필요)
+- Device당 학습: 1-3일
 ```
 
 ### 제약사항 및 해결
@@ -334,9 +351,9 @@ rl_pattern = [
 
 ### Milestone 1: Phase 1 Environment (Week 1-2)
 ```python
-✅ SimplifiedDRAMEnvironment 구현
-✅ 32-action space
-✅ Pattern executor
+✅ Phase1Environment 구현
+✅ 1536-action space (6 operations × 256 patterns)
+✅ Pattern executor (6가지 operation types)
 ✅ Reward function
 ✅ State management
 ```
@@ -491,3 +508,8 @@ rl_pattern = [
   - Phase 1: 32 actions (simplified)
   - Phase 2: Extended action space
   - 명확한 목표 및 성공 기준 정의
+- 2025-11-01: Action space 재설계
+  - 1536 actions = 6 operations × 256 patterns
+  - Operation types: WRITE_ASC, READ_ASC, WRITE_DESC, READ_DESC, WRITE_READ_DESC, WRITE_READ_ASC
+  - Pattern space: 0x00 ~ 0xFF (RL이 최적 패턴 학습)
+  - MBIST user-specify 패턴 기능 활용

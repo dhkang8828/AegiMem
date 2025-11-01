@@ -2,7 +2,7 @@
 Phase 1 Environment: Pattern Sequence Discovery
 
 Goal: Find pattern sequences that detect known faults (MRAT, stressapptest)
-Action Space: 32 actions (2 directions × 2 operations × 8 patterns)
+Action Space: 1536 actions (6 operations × 256 patterns)
 """
 
 import gymnasium as gym
@@ -12,38 +12,30 @@ from typing import Dict, List, Tuple, Optional
 import time
 
 
-class Direction(IntEnum):
-    """Memory scan direction"""
-    ASCENDING = 0   # ⇑ (0 → max)
-    DESCENDING = 1  # ⇓ (max → 0)
-
-
-class Operation(IntEnum):
-    """Memory operation type"""
-    READ = 0
-    WRITE = 1
-
-
-class DataPattern(IntEnum):
-    """DRAM test data patterns"""
-    ALL_0 = 0        # 0x00000000
-    ALL_1 = 1        # 0xFFFFFFFF
-    CHECKER_AA = 2   # 0xAAAAAAAA (10101010...)
-    CHECKER_55 = 3   # 0x55555555 (01010101...)
-    WALK_1_L = 4     # Walking 1 left (0x80000000, 0x40000000, ...)
-    WALK_1_R = 5     # Walking 1 right (0x00000001, 0x00000002, ...)
-    WALK_0_L = 6     # Walking 0 left (0x7FFFFFFF, 0xBFFFFFFF, ...)
-    WALK_0_R = 7     # Walking 0 right (0xFFFFFFFE, 0xFFFFFFFD, ...)
+class OperationType(IntEnum):
+    """Memory test operation types"""
+    WRITE_ASC = 0        # ^(W pattern) - Ascending Write only
+    READ_ASC = 1         # ^(R pattern) - Ascending Read & Compare
+    WRITE_DESC = 2       # v(W pattern) - Descending Write only
+    READ_DESC = 3        # v(R pattern) - Descending Read & Compare
+    WRITE_READ_DESC = 4  # v(W pattern, R pattern) - Descending Write then Read
+    WRITE_READ_ASC = 5   # ^(W pattern, R pattern) - Ascending Write then Read
 
 
 class Phase1Environment(gym.Env):
     """
     Phase 1 RL Environment for Pattern Sequence Discovery
 
-    Action Space: 32 discrete actions
-        - 2 directions (ascending/descending)
-        - 2 operations (read/write)
-        - 8 data patterns
+    Action Space: 1536 discrete actions
+        - 6 operation types:
+          * 0: ^(W pattern) - Ascending Write
+          * 1: ^(R pattern) - Ascending Read
+          * 2: v(W pattern) - Descending Write
+          * 3: v(R pattern) - Descending Read
+          * 4: v(W+R pattern) - Descending Write then Read
+          * 5: ^(W+R pattern) - Ascending Write then Read
+        - 256 data patterns (0x00 ~ 0xFF)
+        - Encoding: action = operation_type * 256 + pattern_byte
 
     Observation Space:
         - sequence_history: Last N actions taken
@@ -80,14 +72,14 @@ class Phase1Environment(gym.Env):
         self.sampling_rate = memory_sampling_rate
         self.verbose = verbose
 
-        # Action space: 32 discrete actions
-        # Index = direction * 16 + operation * 8 + pattern
-        self.action_space = gym.spaces.Discrete(32)
+        # Action space: 1536 discrete actions (6 operations × 256 patterns)
+        # Encoding: action = operation_type * 256 + pattern_byte
+        self.action_space = gym.spaces.Discrete(1536)
 
         # Observation space
         self.observation_space = gym.spaces.Dict({
             'sequence_history': gym.spaces.Box(
-                low=0, high=31,
+                low=0, high=1535,
                 shape=(max_sequence_length,),
                 dtype=np.int32
             ),
@@ -134,7 +126,7 @@ class Phase1Environment(gym.Env):
         Execute one action (pattern test on entire memory)
 
         Args:
-            action: Action index (0-31)
+            action: Action index (0-1535)
 
         Returns:
             observation, reward, terminated, truncated, info
@@ -147,9 +139,8 @@ class Phase1Environment(gym.Env):
         # Execute pattern test on entire memory
         start_time = time.time()
         result = self._execute_pattern_test(
-            direction=cmd['direction'],
-            operation=cmd['operation'],
-            pattern=cmd['pattern']
+            operation_type=cmd['operation_type'],
+            pattern_byte=cmd['pattern_byte']
         )
         execution_time = time.time() - start_time
 
@@ -197,77 +188,110 @@ class Phase1Environment(gym.Env):
         """
         Decode action index to command components
 
-        Action encoding: direction * 16 + operation * 8 + pattern
+        Action encoding: operation_type * 256 + pattern_byte
 
         Args:
-            action: Action index (0-31)
+            action: Action index (0-1535)
 
         Returns:
-            Dict with direction, operation, pattern
+            Dict with operation_type, pattern_byte
         """
-        pattern = action % 8
-        operation = (action // 8) % 2
-        direction = (action // 16) % 2
+        pattern_byte = action % 256
+        operation_type = action // 256
 
         return {
-            'direction': Direction(direction),
-            'operation': Operation(operation),
-            'pattern': DataPattern(pattern)
+            'operation_type': OperationType(operation_type),
+            'pattern_byte': pattern_byte
         }
 
     def _action_to_string(self, action: int) -> str:
         """Convert action to readable string"""
         cmd = self._decode_action(action)
 
-        dir_symbol = '⇑' if cmd['direction'] == Direction.ASCENDING else '⇓'
-        op_symbol = 'R' if cmd['operation'] == Operation.READ else 'W'
-        pattern_name = cmd['pattern'].name
+        op_type = cmd['operation_type']
+        pattern = cmd['pattern_byte']
 
-        return f"{dir_symbol}({op_symbol}{cmd['pattern'].value}:{pattern_name})"
+        # Map operation type to notation
+        op_map = {
+            OperationType.WRITE_ASC: f"^(W 0x{pattern:02X})",
+            OperationType.READ_ASC: f"^(R 0x{pattern:02X})",
+            OperationType.WRITE_DESC: f"v(W 0x{pattern:02X})",
+            OperationType.READ_DESC: f"v(R 0x{pattern:02X})",
+            OperationType.WRITE_READ_DESC: f"v(W 0x{pattern:02X}, R 0x{pattern:02X})",
+            OperationType.WRITE_READ_ASC: f"^(W 0x{pattern:02X}, R 0x{pattern:02X})"
+        }
+
+        return op_map[op_type]
 
     def _execute_pattern_test(
         self,
-        direction: Direction,
-        operation: Operation,
-        pattern: DataPattern
+        operation_type: OperationType,
+        pattern_byte: int
     ) -> Dict:
         """
         Execute pattern test on entire memory
 
-        This performs a march-like operation:
-        - Scan entire memory (or sampled portion)
-        - In specified direction (ascending/descending)
-        - With specified operation (read/write)
-        - Using specified data pattern
+        Performs one of 6 operation types:
+        - WRITE_ASC: ^(W pattern) - Ascending Write
+        - READ_ASC: ^(R pattern) - Ascending Read & Compare
+        - WRITE_DESC: v(W pattern) - Descending Write
+        - READ_DESC: v(R pattern) - Descending Read & Compare
+        - WRITE_READ_DESC: v(W+R pattern) - Descending Write then Read
+        - WRITE_READ_ASC: ^(W+R pattern) - Ascending Write then Read
 
         Args:
-            direction: Scan direction
-            operation: READ or WRITE
-            pattern: Data pattern
+            operation_type: One of 6 operation types
+            pattern_byte: Data pattern (0x00 ~ 0xFF)
 
         Returns:
             Dict with test_failed, error_count
         """
+        # Determine direction
+        is_ascending = operation_type in [
+            OperationType.WRITE_ASC,
+            OperationType.READ_ASC,
+            OperationType.WRITE_READ_ASC
+        ]
+
         # Generate address sequence
-        addresses = self._generate_address_sequence(direction)
+        addresses = self._generate_address_sequence(is_ascending)
 
         # Begin MBIST sequence mode
         self.mbist.begin_sequence()
 
-        # Execute operation on each address
-        for rank, bg, ba, row in addresses:
-            # ACTIVATE row
-            self.mbist.send_activate(rank, bg, ba, row)
+        # Execute based on operation type
+        if operation_type == OperationType.WRITE_ASC or operation_type == OperationType.WRITE_DESC:
+            # Write only: ^(W pattern) or v(W pattern)
+            for rank, bg, ba, row in addresses:
+                self.mbist.send_activate(rank, bg, ba, row)
+                for col in range(0, 2048, 16):
+                    self.mbist.send_write(rank, bg, ba, row, col, pattern_byte)
+                self.mbist.send_precharge(rank, bg, ba, all_banks=False)
 
-            # Process all columns (with burst length 16)
-            for col in range(0, 2048, 16):
-                if operation == Operation.WRITE:
-                    self.mbist.send_write(rank, bg, ba, row, col, pattern.value)
-                else:  # READ
+        elif operation_type == OperationType.READ_ASC or operation_type == OperationType.READ_DESC:
+            # Read only: ^(R pattern) or v(R pattern)
+            # Assumes memory was previously written with this pattern
+            for rank, bg, ba, row in addresses:
+                self.mbist.send_activate(rank, bg, ba, row)
+                for col in range(0, 2048, 16):
                     self.mbist.send_read(rank, bg, ba, row, col)
+                self.mbist.send_precharge(rank, bg, ba, all_banks=False)
 
-            # PRECHARGE
-            self.mbist.send_precharge(rank, bg, ba, all_banks=False)
+        elif operation_type == OperationType.WRITE_READ_ASC or operation_type == OperationType.WRITE_READ_DESC:
+            # Write then Read: ^(W+R pattern) or v(W+R pattern)
+            # First pass: Write
+            for rank, bg, ba, row in addresses:
+                self.mbist.send_activate(rank, bg, ba, row)
+                for col in range(0, 2048, 16):
+                    self.mbist.send_write(rank, bg, ba, row, col, pattern_byte)
+                self.mbist.send_precharge(rank, bg, ba, all_banks=False)
+
+            # Second pass: Read (same direction)
+            for rank, bg, ba, row in addresses:
+                self.mbist.send_activate(rank, bg, ba, row)
+                for col in range(0, 2048, 16):
+                    self.mbist.send_read(rank, bg, ba, row, col)
+                self.mbist.send_precharge(rank, bg, ba, all_banks=False)
 
         # Execute and wait for completion
         self.mbist.end_sequence()
@@ -281,12 +305,12 @@ class Phase1Environment(gym.Env):
             'error_count': error_count
         }
 
-    def _generate_address_sequence(self, direction: Direction) -> List[Tuple]:
+    def _generate_address_sequence(self, is_ascending: bool) -> List[Tuple]:
         """
         Generate address sequence for memory scan
 
         Args:
-            direction: ASCENDING or DESCENDING
+            is_ascending: True for ascending (⇑), False for descending (⇓)
 
         Returns:
             List of (rank, bg, ba, row) tuples
@@ -308,7 +332,7 @@ class Phase1Environment(gym.Env):
             addresses = addresses[::step]
 
         # Apply direction
-        if direction == Direction.DESCENDING:
+        if not is_ascending:
             addresses.reverse()
 
         return addresses

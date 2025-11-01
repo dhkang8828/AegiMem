@@ -1,0 +1,19 @@
+{
+  "allowedTools": [
+    "Bash(*)",
+    "Read(*)",
+    "Write(*)",
+    "Edit(*)",
+    "Glob(*)",
+    "Grep(*)",
+    "WebFetch(*)",
+    "WebSearch(*)",
+    "Task(*)",
+    "TodoWrite(*)",
+    "NotebookEdit(*)",
+    "AskUserQuestion(*)",
+    "SlashCommand(*)",
+    "Skill(*)"
+  ],
+  "description": "Auto-approve all tool permissions for CXL memory RL project"
+}
