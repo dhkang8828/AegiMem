@@ -44,17 +44,20 @@ class ErrorAddress(ctypes.Structure):
 class MBISTInterface:
     """Python interface to MBIST C library"""
 
-    def __init__(self, lib_path: str = "/home/dhkang/data3/mbist_sample_code-gen2_es/bin/mbist_smbus"):
+    def __init__(self, lib_path: str = "/home/dhkang/data3/mbist_sample_code-gen2_es/bin/mbist_smbus",
+                 mock_verbose: bool = False):
         """
         Initialize MBIST interface
 
         Args:
             lib_path: Path to MBIST shared library
+            mock_verbose: Print all mock commands (default: False for performance)
         """
         # Load library (note: executable, not .so for now)
         # In production, we'd build a shared library
         self.lib_path = lib_path
         self._setup_mode = False
+        self.mock_verbose = mock_verbose
 
         # For testing without actual library
         self.mock_mode = not self._try_load_library()
@@ -62,6 +65,9 @@ class MBISTInterface:
         if not self.mock_mode:
             self._setup_functions()
             self._initialize()
+
+        # Mock statistics
+        self.mock_cmd_count = 0
 
     def _try_load_library(self) -> bool:
         """Try to load the library, return True if successful"""
@@ -139,15 +145,18 @@ class MBISTInterface:
     def begin_sequence(self, channel: int = 0):
         """Start command sequence mode"""
         if self.mock_mode:
-            print(f"[MOCK] Begin sequence on channel {channel}")
+            self.mock_cmd_count = 0
+            if self.mock_verbose:
+                print(f"[MOCK] Begin sequence on channel {channel}")
         else:
             self.lib.mt_rl_begin_sequence(channel)
 
     def end_sequence(self, channel: int = 0):
         """End sequence and execute"""
         if self.mock_mode:
-            print(f"[MOCK] Execute sequence on channel {channel}")
-            time.sleep(0.01)  # Simulate execution time
+            if self.mock_verbose:
+                print(f"[MOCK] Execute sequence: {self.mock_cmd_count} commands on channel {channel}")
+            time.sleep(0.001)  # Simulate execution time (faster)
         else:
             self.lib.mt_rl_end_sequence(channel)
 
@@ -158,19 +167,24 @@ class MBISTInterface:
     def send_activate(self, rank: int, bg: int, ba: int, row: int) -> int:
         """Send ACTIVATE command"""
         if self.mock_mode:
-            print(f"[MOCK] ACT: rank={rank}, bg={bg}, ba={ba}, row={row}")
+            self.mock_cmd_count += 1
+            if self.mock_verbose:
+                print(f"[MOCK] ACT: rank={rank}, bg={bg}, ba={ba}, row={row}")
             return 0
         else:
             return self.lib.mt_rl_send_activate(rank, bg, ba, row)
 
     def send_write(self, rank: int, bg: int, ba: int, row: int, col: int,
-                   pattern: PatternType = PatternType.FIXED_AA) -> int:
+                   pattern: int = PatternType.FIXED_AA) -> int:
         """Send WRITE command"""
         if self.mock_mode:
-            print(f"[MOCK] WR: rank={rank}, bg={bg}, ba={ba}, row={row}, col={col}, pattern={pattern.name}")
+            # Handle both int and enum
+            pattern_name = PatternType(pattern).name if isinstance(pattern, int) else pattern.name
+            print(f"[MOCK] WR: rank={rank}, bg={bg}, ba={ba}, row={row}, col={col}, pattern={pattern_name}")
             return 0
         else:
-            return self.lib.mt_rl_send_write(rank, bg, ba, row, col, pattern)
+            pattern_val = pattern if isinstance(pattern, int) else pattern.value
+            return self.lib.mt_rl_send_write(rank, bg, ba, row, col, pattern_val)
 
     def send_read(self, rank: int, bg: int, ba: int, row: int, col: int) -> int:
         """Send READ command"""
