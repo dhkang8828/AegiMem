@@ -142,16 +142,21 @@ class DPAMappingCollector:
         total_samples = (end_dpa - start_dpa) // step
 
         for i, dpa in enumerate(range(start_dpa, end_dpa, step)):
-            if verbose and i % 100 == 0:
-                print(f"Progress: {i}/{total_samples} samples collected (DPA: 0x{dpa:x})")
+            # Print progress more frequently (every 10 samples)
+            if verbose and i % 10 == 0:
+                percentage = (i / total_samples * 100) if total_samples > 0 else 0
+                print(f"Progress: {i}/{total_samples} ({percentage:.1f}%) - DPA: 0x{dpa:x}", flush=True)
 
             mapping = self.translate_dpa(dpa)
             if mapping:
                 samples.append(mapping)
                 self.mapping_data.append(mapping)
+            else:
+                if verbose:
+                    print(f"Warning: Failed to parse DPA 0x{dpa:x}", file=sys.stderr, flush=True)
 
         if verbose:
-            print(f"Collection complete: {len(samples)} samples")
+            print(f"Collection complete: {len(samples)}/{total_samples} samples successfully collected")
 
         return samples
 
