@@ -67,26 +67,54 @@ class DPAMappingCollector:
                 return None
 
             # Parse output
-            # Expected format: "dpa = 0x0, subch = 0, dimm = 0, rank = 0, bg = 0, ba = 0, row = 0x0, col = 0x0"
-            output = result.stdout.strip()
+            # Actual format (multiline):
+            #   dpa       = 0x0
+            #   subch     = 0
+            #   dimm      = 0
+            #   rank      = 0
+            #   bg        = 0
+            #   ba        = 0
+            #   row       = 0x0
+            #   col       = 0x0
+            output = result.stdout
 
-            # Extract values using regex
-            pattern = r'dpa\s*=\s*(0x[0-9a-fA-F]+),\s*subch\s*=\s*(\d+),\s*dimm\s*=\s*(\d+),\s*rank\s*=\s*(\d+),\s*bg\s*=\s*(\d+),\s*ba\s*=\s*(\d+),\s*row\s*=\s*(0x[0-9a-fA-F]+),\s*col\s*=\s*(0x[0-9a-fA-F]+)'
+            # Extract each field individually
+            def extract_field(field_name, is_hex=False):
+                pattern = rf'{field_name}\s*=\s*(0x[0-9a-fA-F]+|\d+)'
+                match = re.search(pattern, output)
+                if not match:
+                    return None
+                value_str = match.group(1)
+                if is_hex or value_str.startswith('0x'):
+                    return int(value_str, 16)
+                else:
+                    return int(value_str)
 
-            match = re.search(pattern, output)
-            if not match:
-                print(f"Failed to parse umxc output for DPA 0x{dpa:x}: {output}", file=sys.stderr)
+            # Extract all fields
+            parsed_dpa = extract_field('dpa', is_hex=True)
+            subch = extract_field('subch')
+            dimm = extract_field('dimm')
+            rank = extract_field('rank')
+            bg = extract_field('bg')
+            ba = extract_field('ba')
+            row = extract_field('row', is_hex=True)
+            col = extract_field('col', is_hex=True)
+
+            # Check if all fields were parsed successfully
+            if any(v is None for v in [parsed_dpa, subch, dimm, rank, bg, ba, row, col]):
+                print(f"Failed to parse umxc output for DPA 0x{dpa:x}", file=sys.stderr)
+                print(f"Output was:\n{output}", file=sys.stderr)
                 return None
 
             return {
-                'dpa': int(match.group(1), 16),
-                'subch': int(match.group(2)),
-                'dimm': int(match.group(3)),
-                'rank': int(match.group(4)),
-                'bg': int(match.group(5)),
-                'ba': int(match.group(6)),
-                'row': int(match.group(7), 16),
-                'col': int(match.group(8), 16)
+                'dpa': parsed_dpa,
+                'subch': subch,
+                'dimm': dimm,
+                'rank': rank,
+                'bg': bg,
+                'ba': ba,
+                'row': row,
+                'col': col
             }
 
         except subprocess.TimeoutExpired:
