@@ -1,0 +1,12 @@
+Select MXC_GEN2_SOC-PCI 0000:0c:00.0 (1B00:C002 REV03 80-CE-00-00-00-00-00-00)
+Adress Decode (Request Code F1h)
+  Device Physical Address = 0x0
+Successful
+  dpa       = 0x100000
+  subch     = 0
+  dimm      = 0
+  rank      = 0 
+  bg        = 0
+  ba        = 0
+  row       = 0x1
+  col       = 0x0

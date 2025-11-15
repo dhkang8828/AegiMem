@@ -191,22 +191,25 @@ class DPATranslator:
                     self.bg_increment = delta
 
     def _init_mock_translation(self):
-        """Initialize mock translation rules (for testing without real data)"""
-        # Simplified mock rules based on typical DRAM organization
-        self.dimm_interleave_size = 64  # 64B cache line
-        self.col_increment = 128  # 2 cache lines per column
-        self.row_increment = 8192  # 128 columns * 64B
-        self.ba_increment = 262144  # 4KB rows * 64B
-        self.bg_increment = 1048576  # 4 banks * 256KB
+        """Initialize translation rules based on actual 128GB CMM-D mapping"""
+        # Actual mapping rules from GNR-CRB measurements
+        # Based on docs/DPA_MAPPING_RULES.md
+        self.dimm_interleave_size = 0x40      # 64B per DIMM
+        self.bg_increment = 0x80              # 128B per BG
+        self.col_increment = 0x400            # 1KB per Column
+        self.ba_increment = 0x20000           # 128KB per BA
+        self.subch_increment = 0x80000        # 512KB per Subchannel
+        self.row_increment = 0x100000         # 1MB per Row
 
+        self.num_subch = 2
         self.num_dimms = 2
         self.num_ranks = 1
-        self.num_bg = 4
+        self.num_bg = 8
         self.num_ba = 4
-        self.max_row = 0x7fff
-        self.max_col = 0x3ff
+        self.max_row = 0x1FFFF  # 128GB device
+        self.max_col = 0x7FF    # 2048 columns (0-0x7ff)
 
-        print("[MOCK] Using simplified translation rules")
+        print("[MOCK] Using actual 128GB CMM-D translation rules")
 
     def dpa_to_dram(self, dpa: int) -> Dict:
         """
@@ -290,50 +293,68 @@ class DPATranslator:
     def _calculate_dpa(self, rank: int, bg: int, ba: int, row: int, col: int,
                       dimm: int, subch: int) -> int:
         """
-        Calculate DPA from DRAM address using inferred rules
+        Calculate DPA from DRAM address using actual mapping rules
 
-        This is a simplified calculation that may need refinement
-        based on actual hardware behavior.
+        Formula (128GB CMM-D):
+        DPA = row × 0x100000 +
+              subch × 0x80000 +
+              ba × 0x20000 +
+              col × 0x400 +
+              bg × 0x80 +
+              dimm × 0x40
         """
         dpa = 0
 
-        # Add column contribution
-        if self.col_increment:
-            dpa += col * self.col_increment
-
-        # Add row contribution
+        # Layer 6: Row (1MB per row)
         if self.row_increment:
             dpa += row * self.row_increment
 
-        # Add bank contribution
+        # Layer 5: Subchannel (512KB per subchannel)
+        if hasattr(self, 'subch_increment') and self.subch_increment:
+            dpa += subch * self.subch_increment
+
+        # Layer 4: BA (128KB per BA)
         if self.ba_increment:
             dpa += ba * self.ba_increment
 
-        # Add bank group contribution
+        # Layer 3: Column (1KB per column)
+        if self.col_increment:
+            dpa += col * self.col_increment
+
+        # Layer 2: BG (128B per BG)
         if self.bg_increment:
             dpa += bg * self.bg_increment
 
-        # Add DIMM interleaving
-        if self.dimm_interleave_size and dimm > 0:
+        # Layer 1: DIMM (64B per DIMM)
+        if self.dimm_interleave_size:
             dpa += dimm * self.dimm_interleave_size
 
-        # TODO: Add rank contribution when detected
+        # Rank is always 0 for this device
 
         return dpa
 
     def _mock_dpa_to_dram(self, dpa: int) -> Dict:
-        """Mock forward translation for testing"""
-        # Simplified mock logic
-        dimm = (dpa // self.dimm_interleave_size) % self.num_dimms
-        remaining = dpa // (self.dimm_interleave_size * self.num_dimms)
+        """Forward translation using actual mapping rules"""
+        # Hierarchical extraction (from largest to smallest)
+        row = dpa // 0x100000
+        dpa_in_row = dpa % 0x100000
 
-        col = (remaining // self.col_increment) % (self.max_col + 1)
-        row = (remaining // self.row_increment) % (self.max_row + 1)
-        ba = (remaining // self.ba_increment) % self.num_ba
-        bg = (remaining // self.bg_increment) % self.num_bg
+        subch = dpa_in_row // 0x80000
+        dpa_in_subch = dpa_in_row % 0x80000
+
+        ba = dpa_in_subch // 0x20000
+        dpa_in_ba = dpa_in_subch % 0x20000
+
+        col = dpa_in_ba // 0x400
+        dpa_in_col = dpa_in_ba % 0x400
+
+        bg = dpa_in_col // 0x80
+        dpa_in_bg = dpa_in_col % 0x80
+
+        dimm = dpa_in_bg // 0x40
 
         return {
-            'subch': 0,
+            'subch': subch,
             'dimm': dimm,
             'rank': 0,
             'bg': bg,
@@ -344,13 +365,15 @@ class DPATranslator:
 
     def _mock_dram_to_dpa(self, rank: int, bg: int, ba: int, row: int, col: int,
                          dimm: int, subch: int) -> int:
-        """Mock reverse translation for testing"""
+        """Reverse translation using actual mapping rules"""
+        # Actual formula based on 128GB CMM-D
         dpa = 0
-        dpa += col * self.col_increment
-        dpa += row * self.row_increment
-        dpa += ba * self.ba_increment
-        dpa += bg * self.bg_increment
-        dpa += dimm * self.dimm_interleave_size
+        dpa += row * 0x100000    # Layer 6: Row (1MB)
+        dpa += subch * 0x80000   # Layer 5: Subchannel (512KB)
+        dpa += ba * 0x20000      # Layer 4: BA (128KB)
+        dpa += col * 0x400       # Layer 3: Column (1KB)
+        dpa += bg * 0x80         # Layer 2: BG (128B)
+        dpa += dimm * 0x40       # Layer 1: DIMM (64B)
         return dpa
 
     def validate_translation(self, sample_size: int = 100) -> float:
