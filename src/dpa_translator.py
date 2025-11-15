@@ -299,9 +299,11 @@ class DPATranslator:
         DPA = row × 0x100000 +
               subch × 0x80000 +
               ba × 0x20000 +
-              col × 0x400 +
+              (col / 0x10) × 0x400 +
               bg × 0x80 +
               dimm × 0x40
+
+        Note: col is encoded (every 0x10 in col = 1KB in DPA)
         """
         dpa = 0
 
@@ -317,9 +319,9 @@ class DPATranslator:
         if self.ba_increment:
             dpa += ba * self.ba_increment
 
-        # Layer 3: Column (1KB per column)
+        # Layer 3: Column (1KB per column, but col is encoded)
         if self.col_increment:
-            dpa += col * self.col_increment
+            dpa += (col // 0x10) * self.col_increment
 
         # Layer 2: BG (128B per BG)
         if self.bg_increment:
@@ -345,7 +347,8 @@ class DPATranslator:
         ba = dpa_in_subch // 0x20000
         dpa_in_ba = dpa_in_subch % 0x20000
 
-        col = dpa_in_ba // 0x400
+        # Column address is encoded: every 1KB (0x400) -> col increases by 0x10
+        col = (dpa_in_ba // 0x400) * 0x10
         dpa_in_col = dpa_in_ba % 0x400
 
         bg = dpa_in_col // 0x80
@@ -367,13 +370,14 @@ class DPATranslator:
                          dimm: int, subch: int) -> int:
         """Reverse translation using actual mapping rules"""
         # Actual formula based on 128GB CMM-D
+        # Note: col is encoded (every 0x10 in col = 1KB in DPA)
         dpa = 0
-        dpa += row * 0x100000    # Layer 6: Row (1MB)
-        dpa += subch * 0x80000   # Layer 5: Subchannel (512KB)
-        dpa += ba * 0x20000      # Layer 4: BA (128KB)
-        dpa += col * 0x400       # Layer 3: Column (1KB)
-        dpa += bg * 0x80         # Layer 2: BG (128B)
-        dpa += dimm * 0x40       # Layer 1: DIMM (64B)
+        dpa += row * 0x100000         # Layer 6: Row (1MB)
+        dpa += subch * 0x80000        # Layer 5: Subchannel (512KB)
+        dpa += ba * 0x20000           # Layer 4: BA (128KB)
+        dpa += (col // 0x10) * 0x400  # Layer 3: Column (1KB, encoded)
+        dpa += bg * 0x80              # Layer 2: BG (128B)
+        dpa += dimm * 0x40            # Layer 1: DIMM (64B)
         return dpa
 
     def validate_translation(self, sample_size: int = 100) -> float:

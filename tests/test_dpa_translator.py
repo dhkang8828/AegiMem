@@ -21,7 +21,7 @@ def test_forward_translation():
         (0x0, {'dimm': 0, 'bg': 0, 'ba': 0, 'row': 0, 'col': 0, 'subch': 0}),
         (0x40, {'dimm': 1, 'bg': 0, 'ba': 0, 'row': 0, 'col': 0, 'subch': 0}),
         (0x80, {'dimm': 0, 'bg': 1, 'ba': 0, 'row': 0, 'col': 0, 'subch': 0}),
-        (0x400, {'dimm': 0, 'bg': 0, 'ba': 0, 'row': 0, 'col': 1, 'subch': 0}),
+        (0x400, {'dimm': 0, 'bg': 0, 'ba': 0, 'row': 0, 'col': 0x10, 'subch': 0}),  # col encoded
         (0x20000, {'dimm': 0, 'bg': 0, 'ba': 1, 'row': 0, 'col': 0, 'subch': 0}),
         (0x80000, {'dimm': 0, 'bg': 0, 'ba': 0, 'row': 0, 'col': 0, 'subch': 1}),
         (0x100000, {'dimm': 0, 'bg': 0, 'ba': 0, 'row': 1, 'col': 0, 'subch': 0}),
@@ -56,7 +56,7 @@ def test_reverse_translation():
         ((0, 0, 0, 0, 0, 0, 0), 0x0),           # rank, bg, ba, row, col, dimm, subch
         ((0, 0, 0, 0, 0, 1, 0), 0x40),          # dimm=1
         ((0, 1, 0, 0, 0, 0, 0), 0x80),          # bg=1
-        ((0, 0, 0, 0, 1, 0, 0), 0x400),         # col=1
+        ((0, 0, 0, 0, 0x10, 0, 0), 0x400),      # col=0x10 (encoded)
         ((0, 0, 1, 0, 0, 0, 0), 0x20000),       # ba=1
         ((0, 0, 0, 0, 0, 0, 1), 0x80000),       # subch=1
         ((0, 0, 0, 1, 0, 0, 0), 0x100000),      # row=1
@@ -122,11 +122,11 @@ def test_specific_examples():
 
     translator = DPATranslator(mock_mode=True)
 
-    # From user's data (corrected based on mapping formula)
+    # From user's data (col is encoded: every 0x10 in col = 1KB in DPA)
     examples = [
         {
             'dpa': 0x0FFFC0,
-            'expected': {'subch': 1, 'dimm': 1, 'rank': 0, 'bg': 7, 'ba': 3, 'row': 0, 'col': 0x7F}
+            'expected': {'subch': 1, 'dimm': 1, 'rank': 0, 'bg': 7, 'ba': 3, 'row': 0, 'col': 0x7F0}
         },
         {
             'dpa': 0x100000,
@@ -134,7 +134,7 @@ def test_specific_examples():
         },
         {
             'dpa': 0x7FFC0,
-            'expected': {'subch': 0, 'dimm': 1, 'rank': 0, 'bg': 7, 'ba': 3, 'row': 0, 'col': 0x7F}
+            'expected': {'subch': 0, 'dimm': 1, 'rank': 0, 'bg': 7, 'ba': 3, 'row': 0, 'col': 0x7F0}
         },
         {
             'dpa': 0x80000,
