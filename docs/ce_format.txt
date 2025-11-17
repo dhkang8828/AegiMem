@@ -1,0 +1,17 @@
+root@cxl-AvenueCityM:/home/cxl/KDH# umxc mbox -H
+Select MXC_GEN2_SOC-PCI_0000:0c:00.0 (1B00:C002 REV03 80-CE-00-00-00-00-00-00) 
+Get Health Info (Opcode 4200h)
+  [000]: 00 00 00 ff 2a 00 00 00 00 00 00 00 00 00 00 00
+  [010]: 00 00 
+    [00h] Health Status: 0x0
+          Maintenance Needed 0, Performance Degraded 0, Hardware Replacement Needed 0
+    [01h] Media Status: 0x0 (Normal)
+    [02h] Additional Status: 0x0
+          Life Used: (Normal), Device Temperature (Normal)
+          Corrected Volatile Error Count (Normal), Corrected Persistent Error Count (Normal)
+    [03h] Life Used: 0FFh (not implemented)
+    [04h] Device Temperature: 42C
+    [06h] Dirty Shutdown Count: 0
+    [0Ah] Corrected Volatile Error Count: 0
+    [0Eh] Corrected Persistent Error Count: 0
+
