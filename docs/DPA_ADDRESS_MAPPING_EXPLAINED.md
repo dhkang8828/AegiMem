@@ -275,38 +275,43 @@ DRAM: 칩이 보는 주소 (실제 물리 구조: Row, Col, Bank)
 
 ### 🚀 빠른 예시
 
-```python
-# DPA만 알고 있을 때
-dpa = 0x400
+```c
+// DPA만 알고 있을 때
+uint64_t dpa = 0x400;
 
-# 질문: 이게 어느 Row인가?
-# 답: 모름! 변환 필요!
+// 질문: 이게 어느 Row인가?
+// 답: 모름! 변환 필요!
 
-# 변환 후
-from dpa_translator import DPATranslator
-translator = DPATranslator(mock_mode=True)
-dram = translator.dpa_to_dram(0x400)
+// 변환 후
+DRAMAddress dram;
+dpa_to_dram(dpa, &dram);
 
-print(dram)
-# {'row': 0, 'bg': 0, 'ba': 0, 'col': 0x10,
-#  'dimm': 0, 'subch': 0, 'rank': 0}
+printf("Row: 0x%X, BG: %d, BA: %d, Col: 0x%X\n",
+       dram.row, dram.bg, dram.ba, dram.col);
+// 출력: Row: 0x0, BG: 0, BA: 0, Col: 0x10
 
-# 이제 알 수 있음:
-# Row 0, Column 0x10에 위치!
+// 이제 알 수 있음:
+// Row 0, Column 0x10에 위치!
 ```
 
-```python
-# 역변환: Row 100을 테스트하고 싶을 때
-dpa = translator.dram_to_dpa(
-    row=100, bg=0, ba=0, col=0,
-    dimm=0, subch=0, rank=0
-)
+```c
+// 역변환: Row 100을 테스트하고 싶을 때
+DRAMAddress target = {
+    .row = 100,
+    .bg = 0,
+    .ba = 0,
+    .col = 0,
+    .dimm = 0,
+    .subch = 0,
+    .rank = 0
+};
 
-print(f"DPA: 0x{dpa:X}")
-# DPA: 0x6400000
+uint64_t dpa = dram_to_dpa(&target);
+printf("DPA: 0x%lX\n", dpa);
+// 출력: DPA: 0x6400000
 
-# 이제 devdax로 접근 가능!
-devdax.write(0x6400000, data)
+// 이제 devdax로 접근 가능!
+// devdax_write(fd, 0x6400000, data, size);
 ```
 
 ---
@@ -546,24 +551,42 @@ ls -lh /dev/dax*
 
 ### 실제 코드 예시
 
-```python
-import os
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <string.h>
 
-# devdax 열기
-fd = os.open('/dev/dax0.0', os.O_RDWR | os.O_SYNC)
+int main() {
+    // devdax 열기
+    int fd = open("/dev/dax0.0", O_RDWR | O_SYNC);
+    if (fd < 0) {
+        perror("Failed to open /dev/dax0.0");
+        return 1;
+    }
 
-# DPA 0x100000에 64바이트 쓰기
-dpa = 0x100000
-data = b'\xAA' * 64
+    // DPA 0x100000에 64바이트 쓰기
+    uint64_t dpa = 0x100000;
+    unsigned char data[64];
+    memset(data, 0xAA, 64);
 
-os.lseek(fd, dpa, os.SEEK_SET)
-os.write(fd, data)
+    lseek(fd, dpa, SEEK_SET);
+    write(fd, data, 64);
 
-# 같은 위치에서 읽기
-os.lseek(fd, dpa, os.SEEK_SET)
-result = os.read(fd, 64)
+    // 같은 위치에서 읽기
+    unsigned char result[64];
+    lseek(fd, dpa, SEEK_SET);
+    read(fd, result, 64);
 
-os.close(fd)
+    // 검증
+    if (memcmp(data, result, 64) == 0) {
+        printf("Write/Read success at DPA 0x%lX\n", dpa);
+    }
+
+    close(fd);
+    return 0;
+}
 ```
 
 **이 코드가 실제로 하는 일:**
@@ -674,28 +697,38 @@ dpa = 0x741 * 0x100000     = 0x74100000
 
 **목표: Row 0 → Row 1 → Row 2 순서로 접근**
 
-```python
-from dpa_translator import DPATranslator
+```c
+#include <stdio.h>
+#include "dpa_translator.h"
 
-translator = DPATranslator(mock_mode=True)
+int main() {
+    // Row 0, 1, 2에 접근하고 싶음
+    // 다른 필드는 모두 0
+    for (int row = 0; row < 3; row++) {
+        DRAMAddress addr = {
+            .rank = 0,
+            .bg = 0,
+            .ba = 0,
+            .row = row,
+            .col = 0,
+            .dimm = 0,
+            .subch = 0
+        };
 
-# Row 0, 1, 2에 접근하고 싶음
-# 다른 필드는 모두 0
-for row in range(3):
-    dpa = translator.dram_to_dpa(
-        rank=0, bg=0, ba=0,
-        row=row, col=0,
-        dimm=0, subch=0
-    )
-    print(f"Row {row} → DPA 0x{dpa:X}")
+        uint64_t dpa = dram_to_dpa(&addr);
+        printf("Row %d → DPA 0x%lX\n", row, dpa);
 
-    # devdax로 실제 접근
-    access_memory(dpa, pattern)
+        // devdax로 실제 접근
+        access_memory(dpa, pattern);
+    }
 
-# 출력:
-# Row 0 → DPA 0x0
-# Row 1 → DPA 0x100000
-# Row 2 → DPA 0x200000
+    return 0;
+}
+
+// 출력:
+// Row 0 → DPA 0x0
+// Row 1 → DPA 0x100000
+// Row 2 → DPA 0x200000
 ```
 
 **핵심:**
@@ -722,16 +755,20 @@ for row in range(3):
 - 단순 랜덤 접근만 가능
 
 **DPA translator 있으면?**
-```python
-# Row 증가 순서
-for row in range(max_row):
-    dpa = dram_to_dpa(..., row=row, ...)
-    test_memory(dpa)
+```c
+// Row 증가 순서
+for (int row = 0; row < max_row; row++) {
+    DRAMAddress addr = {.row = row, .bg = 0, .ba = 0, .col = 0, ...};
+    uint64_t dpa = dram_to_dpa(&addr);
+    test_memory(dpa);
+}
 
-# Row 감소 순서
-for row in range(max_row, -1, -1):
-    dpa = dram_to_dpa(..., row=row, ...)
-    test_memory(dpa)
+// Row 감소 순서
+for (int row = max_row - 1; row >= 0; row--) {
+    DRAMAddress addr = {.row = row, .bg = 0, .ba = 0, .col = 0, ...};
+    uint64_t dpa = dram_to_dpa(&addr);
+    test_memory(dpa);
+}
 ```
 
 ### 2. RL Agent의 State 정의
