@@ -20,58 +20,74 @@
 
 ---
 
-### 📊 주소 변환의 3단계
+### 📊 주소 변환과 접근 방식
 
 ```
-┌──────────────────────────────────────────────────────────┐
-│  Application                                             │
-│  ────────────────                                        │
-│  char* ptr = malloc(1024);                               │
-│  ptr[0] = 'A';  ← Virtual Address (VA)                   │
-│                                                           │
-│  예: 0x7FFE_1234_5678                                    │
-└────────────────┬─────────────────────────────────────────┘
-                 │
-                 ▼ MMU (Memory Management Unit)
-┌──────────────────────────────────────────────────────────┐
-│  OS Kernel / devdax                                      │
-│  ────────────────                                        │
-│  /dev/dax0.0 접근                                        │
-│  write(fd, dpa, data);  ← Device Physical Address (DPA) │
-│                                                           │
-│  예: 0x0010_0000 (1MB)                                   │
-└────────────────┬─────────────────────────────────────────┘
-                 │
-                 ▼ CXL Controller / Memory Controller
-┌──────────────────────────────────────────────────────────┐
-│  DRAM Chip                                               │
-│  ────────────────                                        │
-│  ACT Row=1, BG=0, BA=0                                   │
-│  WR  Col=0x0  ← DRAM Address                             │
-│                                                           │
-│  예: Row=1, BG=0, BA=0, Col=0x0                          │
-└──────────────────────────────────────────────────────────┘
+일반 Application (malloc/mmap)          우리 프로젝트 (Memory Agent)
+════════════════════════════            ════════════════════════════
+
+┌─────────────────────────┐            ┌─────────────────────────┐
+│  Application            │            │  Memory Agent (C)       │
+│  ─────────────          │            │  ─────────────          │
+│  char* ptr = malloc();  │            │  int fd = open(         │
+│  ptr[0] = 'A';          │            │    "/dev/dax0.0");      │
+│                         │            │  lseek(fd, dpa, ...);   │
+│  Virtual Address (VA)   │            │  write(fd, data, ...);  │
+│  예: 0x7FFE_1234_5678   │            │                         │
+└───────────┬─────────────┘            │  직접 DPA 사용!         │
+            │                          │  예: 0x0010_0000 (1MB)  │
+            ▼                          └───────────┬─────────────┘
+     MMU Translation                               │
+            │                                      │
+            ▼                                      │
+┌───────────────────────────────────────────────────────────────┐
+│  Host Physical Address (HPA) - 시스템 전체 물리 주소 공간    │
+│  ───────────────────────────────────────────────────────────  │
+│                                                               │
+│  0x0000_0000 ~ 0x8000_0000       : System DRAM (2GB)         │
+│  0x1_0000_0000 ~ 0x3_0000_0000   : CXL Memory (128GB) ◄─┐    │
+│                                      │                   │    │
+│                                      └─ 이 영역이 DPA ───┘    │
+│                                         (Device Physical      │
+│                                          Address)             │
+└───────────────────────────┬───────────────────────────────────┘
+                            │
+                            ▼ CXL Controller / Memory Controller
+                            │ (DPA → DRAM Address 변환)
+                            │
+┌───────────────────────────▼───────────────────────────────────┐
+│  DRAM Chip                                                    │
+│  ────────────────                                             │
+│  ACT Row=1, BG=0, BA=0                                        │
+│  WR  Col=0x0  ← DRAM Address                                  │
+│                                                               │
+│  예: Row=1, BG=0, BA=0, Col=0x0                               │
+└───────────────────────────────────────────────────────────────┘
 ```
+
+**핵심 차이:**
+- 일반 Application: VA → MMU → HPA → DRAM
+- Memory Agent (우리): **DPA 직접 접근** → DRAM (devdax 사용)
 
 ---
 
 ### 🔑 각 주소 체계의 특징
 
-#### 1. Virtual Address (VA) - 응용 프로그램 레벨
+#### 1. Virtual Address (VA) - 응용 프로그램 레벨 (참고)
 
 ```
 특징:
 ✓ 프로세스마다 독립적인 주소 공간
 ✓ 연속적으로 보이지만 실제론 fragmented
-✓ MMU가 HPA/DPA로 변환
+✓ MMU가 HPA로 변환
 
-예시:
+예시 (일반 Application):
 void* ptr = malloc(1GB);
 → VA: 0x7FFE_0000_0000 ~ 0x7FFE_4000_0000
    (연속적으로 보임)
 
-실제:
-→ 여러 개의 물리 페이지로 분산됨
+⚠️ 우리 프로젝트는 VA를 사용하지 않음!
+   devdax를 통해 DPA에 직접 접근
 ```
 
 #### 2. Host Physical Address (HPA) / Device Physical Address (DPA)
@@ -124,53 +140,66 @@ DPA 0x100000 →
 
 ### 🔄 주소 변환 흐름 예시
 
-```
-시나리오: 응용 프로그램이 CXL 메모리에 데이터 쓰기
+#### 시나리오 1: 일반 Application (참고용)
 
-Step 1: Application
-────────────────────
+```
 char* ptr = (char*)mmap(..., /dev/dax0.0, ...);
 ptr[0] = 'A';
 
+Step 1: Application
+────────────────────
 Virtual Address: 0x7FFE_0000_0000
-
 
 Step 2: MMU 변환
 ────────────────────
-Page Table Lookup:
-VA 0x7FFE_0000_0000 → DPA 0x0000_0000
+Page Table Lookup: VA → HPA
+(devdax는 1:1 매핑)
 
-(devdax는 1:1 매핑이므로 간단)
-
-
-Step 3: devdax
+Step 3: HPA → DPA
 ────────────────────
-/dev/dax0.0에 접근
-DPA: 0x0000_0000
+HPA 0x1_0000_0000 → DPA 0x0 (offset)
+```
 
+#### 시나리오 2: Memory Agent (우리 프로젝트)
 
-Step 4: CXL Controller
+```
+Step 1: Memory Agent (C)
 ────────────────────
-DPA를 분석:
-  DPA 0x0 % 0x40 → DIMM
-  DPA 0x0 / 0x80 → BG
-  DPA 0x0 / 0x100000 → Row
-  ...
+int fd = open("/dev/dax0.0", O_RDWR | O_SYNC);
+uint64_t dpa = 0x100000;  // 직접 DPA 지정!
+unsigned char data = 0xAA;
 
-→ Row=0, BG=0, BA=0, Col=0x0
+lseek(fd, dpa, SEEK_SET);
+write(fd, &data, 1);
+
+→ DPA 0x100000에 직접 접근
 
 
-Step 5: Memory Controller → DRAM
+Step 2: CXL Controller (DPA → DRAM 변환)
+────────────────────
+DPA 0x100000 분석:
+  row   = 0x100000 / 0x100000 = 1
+  subch = 0
+  ba    = 0
+  col   = 0
+  bg    = 0
+  dimm  = 0
+
+→ DRAM Address: Row=1, BG=0, BA=0, Col=0x0
+
+
+Step 3: Memory Controller → DRAM Chip
 ────────────────────
 DRAM 명령 생성:
-  ACT Row=0, BG=0, BA=0
-  WR  Col=0x0, Data='A'
+  ACT Row=1, BG=0, BA=0
+  WR  Col=0x0, Data=0xAA
 
-
-Step 6: DRAM Chip
-────────────────────
-Row 0, Column 0에 'A' 저장
+→ Row 1, Column 0에 0xAA 저장 완료!
 ```
+
+**우리 프로젝트의 핵심:**
+- VA/MMU 우회, DPA 직접 제어
+- DRAM 주소 변환 로직 필요 (DPA ↔ DRAM)
 
 ---
 
@@ -245,14 +274,16 @@ Row 100 테스트하려면:
 ✓ devdax (/dev/dax0.0)를 통해 직접 접근 가능
 ```
 
-#### VA → HPA/DPA → DRAM
+#### 주소 흐름
 
 ```
-VA:  응용 프로그램이 보는 주소 (추상화)
-     ↓ (MMU)
-DPA: OS/장치가 보는 주소 (물리적이지만 연속적)
-     ↓ (Memory Controller)
-DRAM: 칩이 보는 주소 (실제 물리 구조: Row, Col, Bank)
+일반 Application:
+VA → MMU → HPA → DPA → Memory Controller → DRAM
+
+우리 프로젝트 (Memory Agent):
+DPA (직접 접근) → Memory Controller → DRAM
+     ↑
+  devdax를 통해 DPA에 직접 접근!
 ```
 
 #### 변환이 필요한 이유
