@@ -2,12 +2,316 @@
 
 ## 📌 목차
 
-1. [왜 주소 매핑이 중요한가?](#왜-주소-매핑이-중요한가)
-2. [기본 개념: 3가지 주소 공간](#기본-개념-3가지-주소-공간)
-3. [DPA-to-DRAM Address 변환](#dpa-to-dram-address-변환)
-4. [devdax를 통한 메모리 접근](#devdax를-통한-메모리-접근)
-5. [실제 예시](#실제-예시)
-6. [왜 RL 프로젝트에 필요한가?](#왜-rl-프로젝트에-필요한가)
+1. [DPA란 무엇인가? (5분 요약)](#dpa란-무엇인가-5분-요약)
+2. [왜 주소 매핑이 중요한가?](#왜-주소-매핑이-중요한가)
+3. [기본 개념: 3가지 주소 공간](#기본-개념-3가지-주소-공간)
+4. [DPA-to-DRAM Address 변환](#dpa-to-dram-address-변환)
+5. [devdax를 통한 메모리 접근](#devdax를-통한-메모리-접근)
+6. [실제 예시](#실제-예시)
+7. [왜 RL 프로젝트에 필요한가?](#왜-rl-프로젝트에-필요한가)
+
+---
+
+## DPA란 무엇인가? (5분 요약)
+
+### 🎯 한 문장 요약
+
+**DPA (Device Physical Address)는 OS가 CXL 메모리 장치에 접근할 때 사용하는 주소이며, 실제 DRAM 칩의 물리적 구조(Row, Column, Bank)와는 다른 추상화된 주소 체계입니다.**
+
+---
+
+### 📊 주소 변환의 3단계
+
+```
+┌──────────────────────────────────────────────────────────┐
+│  Application                                             │
+│  ────────────────                                        │
+│  char* ptr = malloc(1024);                               │
+│  ptr[0] = 'A';  ← Virtual Address (VA)                   │
+│                                                           │
+│  예: 0x7FFE_1234_5678                                    │
+└────────────────┬─────────────────────────────────────────┘
+                 │
+                 ▼ MMU (Memory Management Unit)
+┌──────────────────────────────────────────────────────────┐
+│  OS Kernel / devdax                                      │
+│  ────────────────                                        │
+│  /dev/dax0.0 접근                                        │
+│  write(fd, dpa, data);  ← Device Physical Address (DPA) │
+│                                                           │
+│  예: 0x0010_0000 (1MB)                                   │
+└────────────────┬─────────────────────────────────────────┘
+                 │
+                 ▼ CXL Controller / Memory Controller
+┌──────────────────────────────────────────────────────────┐
+│  DRAM Chip                                               │
+│  ────────────────                                        │
+│  ACT Row=1, BG=0, BA=0                                   │
+│  WR  Col=0x0  ← DRAM Address                             │
+│                                                           │
+│  예: Row=1, BG=0, BA=0, Col=0x0                          │
+└──────────────────────────────────────────────────────────┘
+```
+
+---
+
+### 🔑 각 주소 체계의 특징
+
+#### 1. Virtual Address (VA) - 응용 프로그램 레벨
+
+```
+특징:
+✓ 프로세스마다 독립적인 주소 공간
+✓ 연속적으로 보이지만 실제론 fragmented
+✓ MMU가 HPA/DPA로 변환
+
+예시:
+void* ptr = malloc(1GB);
+→ VA: 0x7FFE_0000_0000 ~ 0x7FFE_4000_0000
+   (연속적으로 보임)
+
+실제:
+→ 여러 개의 물리 페이지로 분산됨
+```
+
+#### 2. Host Physical Address (HPA) / Device Physical Address (DPA)
+
+```
+특징:
+✓ 시스템의 물리 주소 공간
+✓ HPA = 시스템 전체 (DRAM + CXL + PMEM + ...)
+✓ DPA = CXL 장치만의 물리 주소
+✓ OS가 직접 접근 가능 (devdax)
+
+HPA 예시 (시스템 전체):
+0x0000_0000 ~ 0x8000_0000  : System DRAM (2GB)
+0x1_0000_0000 ~ 0x3_0000_0000 : CXL Memory (128GB)
+                                └─ 이 영역을 CXL 장치 입장에서
+                                   0x0부터 시작하는 주소로 표현한 것이 DPA
+
+DPA 예시 (CXL 장치 입장):
+0x0000_0000 ~ 0x2000_0000_0000  : 128GB CXL Memory
+                                  (HPA에서는 offset되어 있음)
+
+우리 프로젝트:
+devdax를 통해 DPA로 직접 접근
+→ /dev/dax0.0에 write(dpa=0x100000, ...)
+```
+
+#### 3. DRAM Address - 하드웨어 레벨
+
+```
+특징:
+✓ DRAM 칩의 물리적 구조
+✓ Row, Column, Bank Group, Bank로 구성
+✓ Memory Controller가 DPA → DRAM으로 변환
+✓ 불량 분석에 필요한 실제 위치
+
+예시:
+DPA 0x100000 →
+  Subchannel = 0
+  DIMM       = 0
+  Rank       = 0
+  BG         = 0
+  BA         = 0
+  Row        = 1
+  Col        = 0x0
+
+이것이 실제 DRAM 칩에서의 물리적 위치!
+```
+
+---
+
+### 🔄 주소 변환 흐름 예시
+
+```
+시나리오: 응용 프로그램이 CXL 메모리에 데이터 쓰기
+
+Step 1: Application
+────────────────────
+char* ptr = (char*)mmap(..., /dev/dax0.0, ...);
+ptr[0] = 'A';
+
+Virtual Address: 0x7FFE_0000_0000
+
+
+Step 2: MMU 변환
+────────────────────
+Page Table Lookup:
+VA 0x7FFE_0000_0000 → DPA 0x0000_0000
+
+(devdax는 1:1 매핑이므로 간단)
+
+
+Step 3: devdax
+────────────────────
+/dev/dax0.0에 접근
+DPA: 0x0000_0000
+
+
+Step 4: CXL Controller
+────────────────────
+DPA를 분석:
+  DPA 0x0 % 0x40 → DIMM
+  DPA 0x0 / 0x80 → BG
+  DPA 0x0 / 0x100000 → Row
+  ...
+
+→ Row=0, BG=0, BA=0, Col=0x0
+
+
+Step 5: Memory Controller → DRAM
+────────────────────
+DRAM 명령 생성:
+  ACT Row=0, BG=0, BA=0
+  WR  Col=0x0, Data='A'
+
+
+Step 6: DRAM Chip
+────────────────────
+Row 0, Column 0에 'A' 저장
+```
+
+---
+
+### 💡 왜 이렇게 복잡한가?
+
+#### 각 계층의 목적
+
+| 계층 | 목적 | 담당 |
+|------|------|------|
+| **VA** | 프로세스 보호, 메모리 추상화 | OS |
+| **HPA/DPA** | 물리 장치 관리, 주소 공간 분할 | OS + HW |
+| **DRAM Addr** | 실제 하드웨어 접근, 성능 최적화 | Memory Controller |
+
+#### 왜 DPA ≠ DRAM Address?
+
+```
+1. 성능 최적화
+   ─────────────
+   DPA는 연속적 → 순차 접근 시 빠름
+   DRAM은 분산적 → Bank interleaving으로 병렬 처리
+
+   예: DPA 0x0~0x3FF (1KB)
+   → BG 0, BG 1, ..., BG 7에 분산
+   → 동시 접근 가능!
+
+2. 유연성
+   ─────────────
+   DRAM 구조가 바뀌어도 DPA는 유지
+   → 응용 프로그램 수정 불필요
+
+3. 추상화
+   ─────────────
+   프로그래머는 단순히 연속된 주소만 봄
+   → DRAM 복잡도 숨김
+```
+
+---
+
+### 🎓 우리 프로젝트에서의 의미
+
+```
+목표:
+특정 Row, Bank, Column을 테스트하고 싶음
+(March 알고리즘 등)
+
+문제:
+devdax는 DPA만 이해함
+→ "Row 100을 테스트해" (X)
+→ "DPA 0x6400000을 테스트해" (O)
+
+해결:
+DPA ↔ DRAM 변환 필요!
+
+Row 100 테스트하려면:
+  dpa = dram_to_dpa(row=100, bg=0, ba=0, col=0)
+      = 100 × 0x100000
+      = 0x6400000
+
+  devdax.write(0x6400000, data)
+```
+
+---
+
+### 📝 핵심 정리
+
+#### DPA란?
+
+```
+✓ Device Physical Address의 약자
+✓ OS가 CXL 메모리에 접근할 때 사용하는 주소
+✓ 0부터 시작하는 연속된 주소 공간
+✓ devdax (/dev/dax0.0)를 통해 직접 접근 가능
+```
+
+#### VA → HPA/DPA → DRAM
+
+```
+VA:  응용 프로그램이 보는 주소 (추상화)
+     ↓ (MMU)
+DPA: OS/장치가 보는 주소 (물리적이지만 연속적)
+     ↓ (Memory Controller)
+DRAM: 칩이 보는 주소 (실제 물리 구조: Row, Col, Bank)
+```
+
+#### 변환이 필요한 이유
+
+```
+1. March 알고리즘: Row 순차 접근 필요
+   → DPA로는 Row를 지정 못함
+   → DRAM address 알아야 함
+
+2. 불량 위치 분석: "어느 Row에 불량?"
+   → DPA 0x123456은 의미 없음
+   → Row=0x123, BG=4가 의미 있음
+
+3. 테스트 범위 제어: "BG 2만 테스트"
+   → DPA 범위로는 지정 불가
+   → DRAM address로 변환 필요
+```
+
+---
+
+### 🚀 빠른 예시
+
+```python
+# DPA만 알고 있을 때
+dpa = 0x400
+
+# 질문: 이게 어느 Row인가?
+# 답: 모름! 변환 필요!
+
+# 변환 후
+from dpa_translator import DPATranslator
+translator = DPATranslator(mock_mode=True)
+dram = translator.dpa_to_dram(0x400)
+
+print(dram)
+# {'row': 0, 'bg': 0, 'ba': 0, 'col': 0x10,
+#  'dimm': 0, 'subch': 0, 'rank': 0}
+
+# 이제 알 수 있음:
+# Row 0, Column 0x10에 위치!
+```
+
+```python
+# 역변환: Row 100을 테스트하고 싶을 때
+dpa = translator.dram_to_dpa(
+    row=100, bg=0, ba=0, col=0,
+    dimm=0, subch=0, rank=0
+)
+
+print(f"DPA: 0x{dpa:X}")
+# DPA: 0x6400000
+
+# 이제 devdax로 접근 가능!
+devdax.write(0x6400000, data)
+```
+
+---
+
+**이제 자세한 내용을 읽을 준비가 되셨나요? 아래 섹션에서 더 깊이 다룹니다!**
 
 ---
 
