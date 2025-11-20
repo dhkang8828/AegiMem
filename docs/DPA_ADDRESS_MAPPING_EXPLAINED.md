@@ -896,7 +896,7 @@ devdax (DPA) ←→ DPA Translator ←→ DRAM Address
 
 ## 참고 자료
 
-- **구현**: `src/dpa_translator.py`
+- **구현**: `src/MemoryAgent/dpa_translator.py` (Memory Agent용), `src/RLAgent/dpa_translator.py` (RL Agent용)
 - **매핑 규칙**: `docs/DPA_MAPPING_RULES.md`
 - **검증 도구**: `tools/validate_dpa_translation.py`
 - **테스트**: `tests/test_dpa_translator.py`

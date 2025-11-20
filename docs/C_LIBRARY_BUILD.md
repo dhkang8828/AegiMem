@@ -2,18 +2,15 @@
 
 ## Overview
 
-The C library (`mt_rl_primitives`) provides low-level DRAM command primitives for the RL Agent. This library is implemented within the MBIST codebase and compiled as part of the MBIST build process.
+Memory Agent C library는 고성능 메모리 테스트를 위한 저수준 라이브러리입니다. devdax를 통한 직접 메모리 접근과 umxc를 통한 CE 감지를 제공합니다.
 
 ## Location
 
-The RL primitives are located in the MBIST codebase:
-
 ```
-/home/dhkang/data3/mbist_sample_code-gen2_es/
-├── include/
-│   └── mt_rl_primitives.h          # Header file with function declarations
-└── src/
-    └── mt_rl_primitives.c          # Implementation
+src/MemoryAgent/c_library/
+├── memory_agent.c           # C 구현
+├── libmemory_agent.so      # 컴파일된 공유 라이브러리
+└── Makefile                # 빌드 스크립트
 ```
 
 ## Build Process
@@ -21,234 +18,403 @@ The RL primitives are located in the MBIST codebase:
 ### Prerequisites
 
 - GCC compiler
-- MBIST development environment
+- Linux system (GNR-SP)
+- Root 권한 (devdax 접근용)
+- umxc tool 설치
 
 ### Build Commands
 
-1. **Clean previous build**:
-   ```bash
-   cd /home/dhkang/data3/mbist_sample_code-gen2_es
-   make clean
-   ```
-
-2. **Build the library**:
-   ```bash
-   make smbus
-   ```
-
-3. **Verify compilation**:
-   ```bash
-   ls -la target/smbus/mt_rl_primitives.o
-   ```
-
-   Expected output: Object file successfully compiled.
-
-### Build Notes
-
-- The compilation will succeed even if linking fails (due to missing hardware libraries)
-- We only need the object file (`mt_rl_primitives.o`) for Python integration
-- The warning about unused `pattern_type` parameter is expected and will be fixed in future
-
-## Implemented Functions
-
-### Sequence Mode Control
-
-```c
-void mt_rl_begin_sequence(uint8_t channel);
-void mt_rl_end_sequence(uint8_t channel);
-```
-
-### Low-level DRAM Commands
-
-```c
-int mt_rl_send_activate(uint8_t rank, uint8_t bg, uint8_t ba, uint32_t row);
-int mt_rl_send_write(uint8_t rank, uint8_t bg, uint8_t ba, uint32_t row,
-                     uint16_t col, uint8_t pattern_type);
-int mt_rl_send_read(uint8_t rank, uint8_t bg, uint8_t ba, uint32_t row,
-                    uint16_t col);
-int mt_rl_send_precharge(uint8_t rank, uint8_t bg, uint8_t ba, uint8_t all_banks);
-int mt_rl_send_refresh(uint8_t rank, uint8_t bg, uint8_t ba, uint8_t all_banks);
-```
-
-### Result Checking
-
-```c
-int mt_rl_get_test_result(uint8_t channel);
-int mt_rl_get_error_count(uint8_t channel);
-int mt_rl_get_error_addresses(uint8_t channel, MBIST_ERR_ADDRS_T *addrs);
-```
-
-## Command Encoding Details
-
-### ACTIVATE Command
-- Encodes: rank, bank group, bank, row address
-- Row address split: bits [0:3], [4:16], [17]
-- Chip select based on rank
-
-### WRITE Command
-- Encodes: rank, bank group, bank, row, column
-- Column encoding: bits [3:10]
-- Pattern set separately via data pattern functions
-
-### READ Command
-- Similar to WRITE but with different command opcode
-- Column encoding: bits [2:10] (9 bits)
-
-### PRECHARGE Command
-- Single bank: Encodes rank and bank address only
-- All banks: No address encoding needed
-- **Note**: Bank group is NOT encoded in PREsb (hardware limitation)
-
-### REFRESH Command
-- Similar to PRECHARGE
-- **Note**: Bank group is NOT encoded in REFsb (hardware limitation)
-
-## Known Issues and Fixes
-
-### Issue 1: Column Address Encoding
-
-**Problem**: Original code used `cap1_1_8C3_10` field which doesn't exist.
-
-**Fix**: Changed to `cap1_0_8C2_10` with correct bit shift:
-```c
-// Before
-cmd_out->rd.cap1_1_8C3_10 = (col >> 3) & 0xFF;
-
-// After
-cmd_out->rd.cap1_0_8C2_10 = (col >> 2) & 0x1FF;
-```
-
-### Issue 2: Bank Group in PRECHARGE/REFRESH Single Bank
-
-**Problem**: Original code tried to set bank group field which doesn't exist.
-
-**Fix**: Removed bank group encoding for PREsb and REFsb:
-```c
-// PREsb structure doesn't have BG field
-// Only BA (bank address) is supported
-cmd_out->presb.cap_6_7BA0_1 = ba & 0x3;
-```
-
-### Issue 3: Missing Header Include
-
-**Problem**: `MBIST_ERR_ADDRS_T` type not found.
-
-**Fix**: Added include in header file:
-```c
-#include "mt_err.h"
-```
-
-## Testing
-
-### Unit Test Program
-
-A standalone test program is available:
-
 ```bash
-cd /home/dhkang/cxl_memory_rl_project/src/c_library
-gcc -o test_rl_primitives test_rl_primitives.c
-./test_rl_primitives
+# 1. C library 디렉토리로 이동
+cd src/MemoryAgent/c_library
+
+# 2. Clean previous build
+make clean
+
+# 3. Build shared library
+make
+
+# 4. Verify compilation
+ls -la libmemory_agent.so
 ```
 
 Expected output:
 ```
-=== RL Primitives Test Program ===
-Test 1: ACTIVATE rank=0, bg=0, ba=0, row=100
-✓ Test 1 PASSED
-...
-=== All Tests Complete ===
+-rwxrwxr-x 1 user user 21064 Nov 20 13:22 libmemory_agent.so
+```
+
+## Implemented Functions
+
+### Initialization
+
+```c
+int ma_init(const char* devdax_path,
+            size_t memory_size_mb,
+            double sampling_rate);
+```
+
+**Parameters:**
+- `devdax_path`: devdax 경로 (e.g., "/dev/dax0.0")
+- `memory_size_mb`: 메모리 크기 (MB)
+- `sampling_rate`: 샘플링 비율 (0.0-1.0)
+
+**Returns:** 0 on success, -1 on failure
+
+### Execute Action
+
+```c
+int ma_execute_action(int action, ActionResult* result);
+```
+
+**Parameters:**
+- `action`: 0-1535 (operation_type * 256 + pattern)
+- `result`: 결과를 저장할 구조체
+
+**Action Encoding:**
+```c
+operation_type = action / 256;  // 0-5
+pattern = action % 256;         // 0x00-0xFF
+```
+
+**Operation Types:**
+- 0: WR_ASC_ASC - Write ascending, Read ascending
+- 1: WR_DESC_DESC - Write descending, Read descending
+- 2: WR_ASC_DESC - Write ascending, Read descending
+- 3: WR_DESC_ASC - Write descending, Read ascending
+- 4: WR_DESC_SINGLE - Write+Read descending (single pass)
+- 5: WR_ASC_SINGLE - Write+Read ascending (single pass)
+
+### CE Detection
+
+```c
+int ma_get_ce_info(CEInfo* ce_info);
+```
+
+**Returns:** Current CE count information from umxc
+
+### Reset Baseline
+
+```c
+int ma_reset_baseline();
+```
+
+**Returns:** 0 on success
+
+## Data Structures
+
+### CEInfo
+
+```c
+typedef struct {
+    int volatile_count;      // Corrected volatile errors
+    int persistent_count;    // Corrected persistent errors
+    int total_count;         // Total CE count
+    int temperature;         // Device temperature (°C)
+    int health_status;       // Health status code
+} CEInfo;
+```
+
+### ActionResult
+
+```c
+typedef struct {
+    CEInfo ce_info;          // CE information
+    int success;             // Operation success flag
+} ActionResult;
+```
+
+## Implementation Details
+
+### devdax Access
+
+```c
+static int devdax_fd = -1;
+
+// Open devdax device
+int fd = open(devdax_path, O_RDWR | O_SYNC);
+
+// Write to memory
+lseek(fd, dpa, SEEK_SET);
+write(fd, data, size);
+
+// Read from memory
+lseek(fd, dpa, SEEK_SET);
+read(fd, buffer, size);
+```
+
+### umxc CE Detection
+
+```c
+static int execute_umxc(CEInfo* ce_info) {
+    FILE* fp = popen("umxc mbox -H", "r");
+
+    // Parse output:
+    // [0Ah] Corrected Volatile Error Count: X
+    // [0Eh] Corrected Persistent Error Count: X
+
+    // Calculate delta from baseline
+    ce_info->volatile_count = current - baseline_volatile;
+    ce_info->persistent_count = current - baseline_persistent;
+    ce_info->total_count = ce_info->volatile_count +
+                           ce_info->persistent_count;
+
+    pclose(fp);
+    return 0;
+}
+```
+
+### Memory Operations
+
+#### Write Ascending
+```c
+static int write_ascending(unsigned char pattern) {
+    for (uint64_t dpa = 0; dpa < total_size; dpa += BLOCK_SIZE) {
+        lseek(devdax_fd, dpa, SEEK_SET);
+        write(devdax_fd, data, BLOCK_SIZE);
+    }
+    return 0;
+}
+```
+
+#### Read Ascending with Verification
+```c
+static int read_ascending(unsigned char expected_pattern) {
+    for (uint64_t dpa = 0; dpa < total_size; dpa += BLOCK_SIZE) {
+        lseek(devdax_fd, dpa, SEEK_SET);
+        read(devdax_fd, buffer, BLOCK_SIZE);
+
+        // Verification happens at hardware level
+        // CE detection via umxc
+    }
+    return 0;
+}
 ```
 
 ## Python Integration
 
-The Python interface (`src/mbist_interface.py`) uses ctypes to call these C functions.
+### Using ctypes
 
-### Current Status
+```python
+from ctypes import CDLL, Structure, c_int, c_uint64, c_char_p, c_double
 
-- Python interface implemented with Mock mode
-- Ready for integration with compiled library
-- Will require building shared library (.so) from object files
+class CEInfo(Structure):
+    _fields_ = [
+        ('volatile_count', c_int),
+        ('persistent_count', c_int),
+        ('total_count', c_int),
+        ('temperature', c_int),
+        ('health_status', c_int)
+    ]
 
-### Next Steps
+class MemoryAgentC:
+    def __init__(self, library_path='c_library/libmemory_agent.so'):
+        self.lib = CDLL(library_path)
 
-1. Create shared library from object files
-2. Load library in Python using ctypes
-3. Test with actual hardware
-4. Integrate with RL environment
+        # Setup function signatures
+        self.lib.ma_init.argtypes = [c_char_p, c_uint64, c_double]
+        self.lib.ma_init.restype = c_int
 
-## Address Space
+        self.lib.ma_execute_action.argtypes = [c_int, POINTER(ActionResult)]
+        self.lib.ma_execute_action.restype = c_int
 
-### DRAM Organization
+    def init(self, devdax_path, memory_size_mb, sampling_rate):
+        return self.lib.ma_init(
+            devdax_path.encode('utf-8'),
+            memory_size_mb,
+            sampling_rate
+        )
 
+    def execute_action(self, action):
+        result = ActionResult()
+        ret = self.lib.ma_execute_action(action, byref(result))
+        return result.ce_info, (ret == 0)
 ```
-Rank: 0-3 (4 ranks)
-Bank Group: 0-7 (8 bank groups)
-Bank: 0-3 (4 banks per group)
-Row: 0-262143 (262K rows, 18 bits)
-Column: 0-2047 (2K columns, 11 bits)
+
+### Usage in Memory Agent Server
+
+```python
+# src/MemoryAgent/memory_agent_server.py
+from memory_agent_c_wrapper import MemoryAgentC
+
+# Initialize
+memory_agent = MemoryAgentC()
+memory_agent.init("/dev/dax0.0", 128000, 0.01)
+
+# Execute action
+@app.route('/execute_action', methods=['POST'])
+def execute_action():
+    action = request.json['action']
+    ce_info, success = memory_agent.execute_action(action)
+
+    return jsonify({
+        'success': success,
+        'ce_detected': ce_info.has_errors(),
+        'ce_total': ce_info.total_count
+    })
 ```
 
-### Total Addressable Space
+## Testing
 
+### Compilation Test
+
+```bash
+cd src/MemoryAgent/c_library
+make clean && make
+
+# Check for errors
+echo $?  # Should be 0
 ```
-4 ranks × 8 BG × 4 BA × 262144 rows × 2048 columns
-= ~68 billion addresses
+
+### Standalone Test (requires root)
+
+```bash
+# Create simple test program
+cat > test_simple.c << 'EOF'
+#include <stdio.h>
+#include "memory_agent.h"
+
+int main() {
+    printf("Initializing...\n");
+    int ret = ma_init("/dev/dax0.0", 128000, 0.01);
+    printf("Init result: %d\n", ret);
+    return 0;
+}
+EOF
+
+gcc -o test_simple test_simple.c -L. -lmemory_agent
+sudo ./test_simple
+```
+
+### Integration Test with Python
+
+```python
+# test_integration.py
+from memory_agent_c_wrapper import MemoryAgentC
+
+agent = MemoryAgentC()
+print("Initializing...")
+agent.init("/dev/dax0.0", 128000, 0.01)
+
+print("Executing action 0...")
+ce_info, success = agent.execute_action(0)
+print(f"Success: {success}")
+print(f"CE Total: {ce_info.total_count}")
+```
+
+```bash
+sudo python3 test_integration.py
 ```
 
 ## Performance Considerations
 
-### Sequence Mode
+### Block Size
 
-- **Queue mode**: Commands batched in SRAM (up to 512 commands)
-- **Immediate mode**: Single command executed immediately
-- Use sequence mode for efficiency when running test patterns
+현재 설정: 64 bytes (cache line aligned)
 
-### SRAM Limitations
+```c
+#define BLOCK_SIZE 64
+```
 
-- Maximum 512 commands per sequence
-- For longer sequences (e.g., row hammer), use batching:
-  ```c
-  batch_size = 500;
-  for (int i = 0; i < total_count; i += batch_size) {
-      mt_rl_begin_sequence(channel);
-      // Add up to 500 commands
-      mt_rl_end_sequence(channel);
-  }
-  ```
+### Sampling Rate
+
+전체 메모리를 테스트하는 대신 샘플링:
+
+```c
+// 1% sampling
+ma_init("/dev/dax0.0", 128000, 0.01);
+
+// 실제 테스트 크기 = 128GB * 0.01 = 1.28GB
+```
+
+### Memory Access Pattern
+
+- Sequential access for better cache utilization
+- 64-byte aligned for devdax requirements
+- O_SYNC flag for immediate hardware write
 
 ## Troubleshooting
 
 ### Build Errors
 
-**Error**: `cannot find -lumxc_devlib`
+**Error**: `stdarg.h: No such file or directory`
 
-**Solution**: This is expected when building full executable. We only need object files.
+**Solution**:
+```bash
+sudo apt-get install build-essential
+```
 
-**Error**: `unknown type name 'MBIST_ERR_ADDRS_T'`
+**Error**: Permission denied on devdax
 
-**Solution**: Ensure `mt_err.h` is included in header file.
+**Solution**: Run with sudo or add user to appropriate group:
+```bash
+sudo chmod 666 /dev/dax0.0
+```
 
 ### Runtime Issues
 
-**Issue**: Commands not executing
+**Issue**: CE count not updating
 
 **Check**:
-1. Sequence mode properly closed with `mt_rl_end_sequence()`
-2. Hardware initialization completed
-3. Channel parameter correct (0 or 1)
+1. umxc tool installed and in PATH
+2. Baseline properly initialized
+3. Sufficient memory access to trigger CE
+
+**Issue**: Segmentation fault
+
+**Check**:
+1. devdax properly initialized before use
+2. Memory size not exceeding device capacity
+3. Proper structure alignment in ctypes
+
+## Makefile
+
+```makefile
+CC = gcc
+CFLAGS = -Wall -Wextra -fPIC -O2
+LDFLAGS = -shared
+
+TARGET = libmemory_agent.so
+SOURCES = memory_agent.c
+OBJECTS = $(SOURCES:.c=.o)
+
+all: $(TARGET)
+
+$(TARGET): $(OBJECTS)
+	$(CC) $(LDFLAGS) -o $@ $^
+
+%.o: %.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+clean:
+	rm -f $(OBJECTS) $(TARGET)
+
+.PHONY: all clean
+```
 
 ## References
 
-- MBIST API Documentation: `/home/dhkang/data3/mbist_sample_code-gen2_es/docs/`
-- Command Encoding Analysis: `docs/MBIST_COMMAND_ENCODING_ANALYSIS.md`
-- Integration Plan: `docs/MBIST_INTEGRATION_PLAN.md`
+- **Implementation**: `src/MemoryAgent/c_library/memory_agent.c`
+- **Python Wrapper**: `src/MemoryAgent/memory_agent_c_wrapper.py`
+- **REST API**: `src/MemoryAgent/memory_agent_server.py`
+- **Architecture**: `docs/DISTRIBUTED_ARCHITECTURE.md`
+- **DPA Mapping**: `docs/DPA_ADDRESS_MAPPING_EXPLAINED.md`
 
 ## Changelog
 
-### 2025-11-01
-- ✅ Initial implementation
-- ✅ Fixed column address encoding bug
-- ✅ Fixed bank group encoding in PREsb/REFsb
-- ✅ Added header includes for missing types
-- ✅ Successfully compiled object files
-- ✅ Created and ran unit tests
+### 2024-11-20
+- ✅ Migrated to devdax-based architecture
+- ✅ Removed MBIST dependency
+- ✅ Added umxc CE detection
+- ✅ Implemented 6 operation types
+- ✅ Created Python ctypes wrapper
+- ✅ Integrated with Flask REST API server
+
+### 2024-11-17
+- ✅ Initial C library implementation
+- ✅ Successfully compiled libmemory_agent.so
+- ✅ Fixed compilation warnings
+
+---
+
+**Last Updated**: 2024-11-20
+**Version**: 2.0 (devdax-based)
