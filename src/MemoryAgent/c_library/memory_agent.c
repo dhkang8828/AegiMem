@@ -228,24 +228,46 @@ static int read_ascending(uint64_t start, uint64_t end, uint8_t expected_pattern
  * @brief Read and verify from devdax in descending order
  */
 static int read_descending(uint64_t start, uint64_t end, uint8_t expected_pattern) {
-    uint8_t buffer[64];
     (void)expected_pattern;  /* Unused - CE detector handles verification */
+    #define ALIGN_SIZE (2 * 1024 * 1024)  /* 2MB alignment */
 
-    for (uint64_t dpa = end - 64; dpa >= start; dpa -= 64) {
-        if (lseek(g_state.devdax_fd, dpa, SEEK_SET) < 0) {
-            set_error("lseek failed at 0x%lx: %s", dpa, strerror(errno));
-            return -1;
-        }
+    /* Align start and end to 2MB boundaries */
+    uint64_t aligned_start = (start / ALIGN_SIZE) * ALIGN_SIZE;
+    uint64_t aligned_end = ((end + ALIGN_SIZE - 1) / ALIGN_SIZE) * ALIGN_SIZE;
+    size_t map_size = aligned_end - aligned_start;
 
-        ssize_t bytes_read = read(g_state.devdax_fd, buffer, sizeof(buffer));
-        if (bytes_read != sizeof(buffer)) {
-            set_error("read failed at 0x%lx: %s", dpa, strerror(errno));
-            return -1;
-        }
-
-        if (dpa == start) break;  /* Prevent underflow */
+    if (map_size == 0) {
+        map_size = ALIGN_SIZE;
     }
 
+    /* mmap the region */
+    void* mapped = mmap(NULL, map_size, PROT_READ,
+                        MAP_SHARED, g_state.devdax_fd, aligned_start);
+    if (mapped == MAP_FAILED) {
+        set_error("mmap failed at 0x%lx (size=%zu): %s",
+                 aligned_start, map_size, strerror(errno));
+        return -1;
+    }
+
+    /* Read pattern from the mapped region in descending order */
+    volatile uint8_t* ptr = (volatile uint8_t*)mapped;
+    size_t offset_start = start - aligned_start;
+    size_t offset_end = (end - aligned_start < map_size) ?
+                        (end - aligned_start) : map_size;
+
+    uint8_t dummy;
+    /* Descending order - need to handle underflow carefully */
+    if (offset_end >= 64) {
+        for (size_t i = offset_end - 64; ; i -= 64) {
+            /* Force read from memory - CE detector will catch errors */
+            dummy = ptr[i];
+            (void)dummy;
+
+            if (i <= offset_start || i < 64) break;  /* Prevent underflow */
+        }
+    }
+
+    munmap(mapped, map_size);
     return 0;
 }
 
@@ -253,33 +275,46 @@ static int read_descending(uint64_t start, uint64_t end, uint8_t expected_patter
  * @brief Write and read immediately (ascending)
  */
 static int write_read_ascending(uint64_t start, uint64_t end, uint8_t pattern) {
-    uint8_t write_buf[64], read_buf[64];
-    memset(write_buf, pattern, sizeof(write_buf));
+    #define ALIGN_SIZE (2 * 1024 * 1024)  /* 2MB alignment */
 
-    for (uint64_t dpa = start; dpa < end; dpa += 64) {
-        /* Write */
-        if (lseek(g_state.devdax_fd, dpa, SEEK_SET) < 0) {
-            set_error("lseek failed at 0x%lx: %s", dpa, strerror(errno));
-            return -1;
-        }
+    /* Align start and end to 2MB boundaries */
+    uint64_t aligned_start = (start / ALIGN_SIZE) * ALIGN_SIZE;
+    uint64_t aligned_end = ((end + ALIGN_SIZE - 1) / ALIGN_SIZE) * ALIGN_SIZE;
+    size_t map_size = aligned_end - aligned_start;
 
-        if (write(g_state.devdax_fd, write_buf, sizeof(write_buf)) != sizeof(write_buf)) {
-            set_error("write failed at 0x%lx: %s", dpa, strerror(errno));
-            return -1;
-        }
-
-        /* Read back */
-        if (lseek(g_state.devdax_fd, dpa, SEEK_SET) < 0) {
-            set_error("lseek failed at 0x%lx: %s", dpa, strerror(errno));
-            return -1;
-        }
-
-        if (read(g_state.devdax_fd, read_buf, sizeof(read_buf)) != sizeof(read_buf)) {
-            set_error("read failed at 0x%lx: %s", dpa, strerror(errno));
-            return -1;
-        }
+    if (map_size == 0) {
+        map_size = ALIGN_SIZE;
     }
 
+    /* mmap the region */
+    void* mapped = mmap(NULL, map_size, PROT_READ | PROT_WRITE,
+                        MAP_SHARED, g_state.devdax_fd, aligned_start);
+    if (mapped == MAP_FAILED) {
+        set_error("mmap failed at 0x%lx (size=%zu): %s",
+                 aligned_start, map_size, strerror(errno));
+        return -1;
+    }
+
+    volatile uint8_t* ptr = (volatile uint8_t*)mapped;
+    size_t offset_start = start - aligned_start;
+    size_t offset_end = (end - aligned_start < map_size) ?
+                        (end - aligned_start) : map_size;
+
+    uint8_t dummy;
+    /* Write and immediately read back in ascending order */
+    for (size_t i = offset_start; i < offset_end; i += 64) {
+        /* Write pattern */
+        memset((void*)(ptr + i), pattern, 64);
+
+        /* Read back immediately - CE detector will catch errors */
+        dummy = ptr[i];
+        (void)dummy;
+    }
+
+    /* Ensure writes are flushed */
+    msync(mapped, map_size, MS_SYNC);
+
+    munmap(mapped, map_size);
     return 0;
 }
 
@@ -287,35 +322,50 @@ static int write_read_ascending(uint64_t start, uint64_t end, uint8_t pattern) {
  * @brief Write and read immediately (descending)
  */
 static int write_read_descending(uint64_t start, uint64_t end, uint8_t pattern) {
-    uint8_t write_buf[64], read_buf[64];
-    memset(write_buf, pattern, sizeof(write_buf));
+    #define ALIGN_SIZE (2 * 1024 * 1024)  /* 2MB alignment */
 
-    for (uint64_t dpa = end - 64; dpa >= start; dpa -= 64) {
-        /* Write */
-        if (lseek(g_state.devdax_fd, dpa, SEEK_SET) < 0) {
-            set_error("lseek failed at 0x%lx: %s", dpa, strerror(errno));
-            return -1;
-        }
+    /* Align start and end to 2MB boundaries */
+    uint64_t aligned_start = (start / ALIGN_SIZE) * ALIGN_SIZE;
+    uint64_t aligned_end = ((end + ALIGN_SIZE - 1) / ALIGN_SIZE) * ALIGN_SIZE;
+    size_t map_size = aligned_end - aligned_start;
 
-        if (write(g_state.devdax_fd, write_buf, sizeof(write_buf)) != sizeof(write_buf)) {
-            set_error("write failed at 0x%lx: %s", dpa, strerror(errno));
-            return -1;
-        }
-
-        /* Read back */
-        if (lseek(g_state.devdax_fd, dpa, SEEK_SET) < 0) {
-            set_error("lseek failed at 0x%lx: %s", dpa, strerror(errno));
-            return -1;
-        }
-
-        if (read(g_state.devdax_fd, read_buf, sizeof(read_buf)) != sizeof(read_buf)) {
-            set_error("read failed at 0x%lx: %s", dpa, strerror(errno));
-            return -1;
-        }
-
-        if (dpa == start) break;  /* Prevent underflow */
+    if (map_size == 0) {
+        map_size = ALIGN_SIZE;
     }
 
+    /* mmap the region */
+    void* mapped = mmap(NULL, map_size, PROT_READ | PROT_WRITE,
+                        MAP_SHARED, g_state.devdax_fd, aligned_start);
+    if (mapped == MAP_FAILED) {
+        set_error("mmap failed at 0x%lx (size=%zu): %s",
+                 aligned_start, map_size, strerror(errno));
+        return -1;
+    }
+
+    volatile uint8_t* ptr = (volatile uint8_t*)mapped;
+    size_t offset_start = start - aligned_start;
+    size_t offset_end = (end - aligned_start < map_size) ?
+                        (end - aligned_start) : map_size;
+
+    uint8_t dummy;
+    /* Write and immediately read back in descending order */
+    if (offset_end >= 64) {
+        for (size_t i = offset_end - 64; ; i -= 64) {
+            /* Write pattern */
+            memset((void*)(ptr + i), pattern, 64);
+
+            /* Read back immediately - CE detector will catch errors */
+            dummy = ptr[i];
+            (void)dummy;
+
+            if (i <= offset_start || i < 64) break;  /* Prevent underflow */
+        }
+    }
+
+    /* Ensure writes are flushed */
+    msync(mapped, map_size, MS_SYNC);
+
+    munmap(mapped, map_size);
     return 0;
 }
 
