@@ -104,35 +104,41 @@ static int execute_umxc(CEInfo* ce_info) {
  * @brief Write pattern to devdax in ascending order
  */
 static int write_ascending(uint64_t start, uint64_t end, uint8_t pattern) {
-    uint8_t buffer[64] __attribute__((aligned(64)));  /* Ensure 64-byte alignment */
-    memset(buffer, pattern, sizeof(buffer));
+    /* devdax requires 2MB alignment - use mmap instead of write() */
+    #define ALIGN_SIZE (2 * 1024 * 1024)  /* 2MB alignment */
 
-    /* Debug: print first attempt */
-    static int first_call = 1;
-    if (first_call) {
-        printf("DEBUG: write_ascending first call - start=0x%lx, end=0x%lx, fd=%d\n",
-               start, end, g_state.devdax_fd);
-        first_call = 0;
+    /* Align start and end to 2MB boundaries */
+    uint64_t aligned_start = (start / ALIGN_SIZE) * ALIGN_SIZE;
+    uint64_t aligned_end = ((end + ALIGN_SIZE - 1) / ALIGN_SIZE) * ALIGN_SIZE;
+    size_t map_size = aligned_end - aligned_start;
+
+    if (map_size == 0) {
+        map_size = ALIGN_SIZE;
     }
 
-    for (uint64_t dpa = start; dpa < end; dpa += 64) {
-        off_t seek_result = lseek(g_state.devdax_fd, dpa, SEEK_SET);
-        if (seek_result < 0) {
-            set_error("lseek failed at 0x%lx: %s (fd=%d)", dpa, strerror(errno), g_state.devdax_fd);
-            return -1;
-        }
-
-        ssize_t written = write(g_state.devdax_fd, buffer, sizeof(buffer));
-        if (written != sizeof(buffer)) {
-            set_error("write at 0x%lx: %s (written=%ld, expected=64, errno=%d)",
-                     dpa, strerror(errno), written, errno);
-            return -1;
-        }
-
-        /* Only do a small sample for testing */
-        if (dpa - start > 1024) break;  /* Test only first 1KB */
+    /* mmap the region */
+    void* mapped = mmap(NULL, map_size, PROT_READ | PROT_WRITE,
+                        MAP_SHARED, g_state.devdax_fd, aligned_start);
+    if (mapped == MAP_FAILED) {
+        set_error("mmap failed at 0x%lx (size=%zu): %s",
+                 aligned_start, map_size, strerror(errno));
+        return -1;
     }
 
+    /* Write pattern to the mapped region in ascending order */
+    uint8_t* ptr = (uint8_t*)mapped;
+    size_t offset_start = start - aligned_start;
+    size_t offset_end = (end - aligned_start < map_size) ?
+                        (end - aligned_start) : map_size;
+
+    for (size_t i = offset_start; i < offset_end; i += 64) {
+        memset(ptr + i, pattern, 64);
+    }
+
+    /* Ensure writes are flushed */
+    msync(mapped, map_size, MS_SYNC);
+
+    munmap(mapped, map_size);
     return 0;
 }
 
@@ -140,24 +146,40 @@ static int write_ascending(uint64_t start, uint64_t end, uint8_t pattern) {
  * @brief Write pattern to devdax in descending order
  */
 static int write_descending(uint64_t start, uint64_t end, uint8_t pattern) {
-    uint8_t buffer[64];
-    memset(buffer, pattern, sizeof(buffer));
+    #define ALIGN_SIZE (2 * 1024 * 1024)  /* 2MB alignment */
 
-    for (uint64_t dpa = end - 64; dpa >= start; dpa -= 64) {
-        if (lseek(g_state.devdax_fd, dpa, SEEK_SET) < 0) {
-            set_error("lseek failed at 0x%lx: %s", dpa, strerror(errno));
-            return -1;
-        }
+    /* Align start and end to 2MB boundaries */
+    uint64_t aligned_start = (start / ALIGN_SIZE) * ALIGN_SIZE;
+    uint64_t aligned_end = ((end + ALIGN_SIZE - 1) / ALIGN_SIZE) * ALIGN_SIZE;
+    size_t map_size = aligned_end - aligned_start;
 
-        ssize_t written = write(g_state.devdax_fd, buffer, sizeof(buffer));
-        if (written != sizeof(buffer)) {
-            set_error("write failed at 0x%lx: %s", dpa, strerror(errno));
-            return -1;
-        }
-
-        if (dpa == start) break;  /* Prevent underflow */
+    if (map_size == 0) {
+        map_size = ALIGN_SIZE;
     }
 
+    /* mmap the region */
+    void* mapped = mmap(NULL, map_size, PROT_READ | PROT_WRITE,
+                        MAP_SHARED, g_state.devdax_fd, aligned_start);
+    if (mapped == MAP_FAILED) {
+        set_error("mmap failed at 0x%lx (size=%zu): %s",
+                 aligned_start, map_size, strerror(errno));
+        return -1;
+    }
+
+    /* Write pattern to the mapped region in descending order */
+    uint8_t* ptr = (uint8_t*)mapped;
+    size_t offset_start = start - aligned_start;
+    size_t offset_end = (end - aligned_start < map_size) ?
+                        (end - aligned_start) : map_size;
+
+    /* Descending: start from end */
+    for (size_t i = offset_end - 64; i >= offset_start; i -= 64) {
+        memset(ptr + i, pattern, 64);
+        if (i == offset_start) break;  /* Prevent underflow */
+    }
+
+    msync(mapped, map_size, MS_SYNC);
+    munmap(mapped, map_size);
     return 0;
 }
 
@@ -165,24 +187,40 @@ static int write_descending(uint64_t start, uint64_t end, uint8_t pattern) {
  * @brief Read and verify from devdax in ascending order
  */
 static int read_ascending(uint64_t start, uint64_t end, uint8_t expected_pattern) {
-    uint8_t buffer[64];
     (void)expected_pattern;  /* Unused - CE detector handles verification */
+    #define ALIGN_SIZE (2 * 1024 * 1024)  /* 2MB alignment */
 
-    for (uint64_t dpa = start; dpa < end; dpa += 64) {
-        if (lseek(g_state.devdax_fd, dpa, SEEK_SET) < 0) {
-            set_error("lseek failed at 0x%lx: %s", dpa, strerror(errno));
-            return -1;
-        }
+    uint64_t aligned_start = (start / ALIGN_SIZE) * ALIGN_SIZE;
+    uint64_t aligned_end = ((end + ALIGN_SIZE - 1) / ALIGN_SIZE) * ALIGN_SIZE;
+    size_t map_size = aligned_end - aligned_start;
 
-        ssize_t bytes_read = read(g_state.devdax_fd, buffer, sizeof(buffer));
-        if (bytes_read != sizeof(buffer)) {
-            set_error("read failed at 0x%lx: %s", dpa, strerror(errno));
-            return -1;
-        }
-
-        /* Verification is implicit - CE detector will catch errors */
+    if (map_size == 0) {
+        map_size = ALIGN_SIZE;
     }
 
+    /* mmap the region */
+    void* mapped = mmap(NULL, map_size, PROT_READ,
+                        MAP_SHARED, g_state.devdax_fd, aligned_start);
+    if (mapped == MAP_FAILED) {
+        set_error("mmap failed at 0x%lx (size=%zu): %s",
+                 aligned_start, map_size, strerror(errno));
+        return -1;
+    }
+
+    /* Read pattern from the mapped region in ascending order */
+    volatile uint8_t* ptr = (volatile uint8_t*)mapped;
+    size_t offset_start = start - aligned_start;
+    size_t offset_end = (end - aligned_start < map_size) ?
+                        (end - aligned_start) : map_size;
+
+    uint8_t dummy;
+    for (size_t i = offset_start; i < offset_end; i += 64) {
+        /* Force read from memory - CE detector will catch errors */
+        dummy = ptr[i];
+        (void)dummy;
+    }
+
+    munmap(mapped, map_size);
     return 0;
 }
 
