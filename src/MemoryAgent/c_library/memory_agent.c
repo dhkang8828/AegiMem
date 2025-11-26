@@ -20,8 +20,6 @@ typedef struct {
     int devdax_fd;
     char devdax_path[256];
     size_t memory_size;
-    double sampling_rate;
-    size_t test_size;
 
     /* CE baseline for delta calculation */
     int baseline_volatile;
@@ -374,7 +372,7 @@ static int write_read_descending(uint64_t start, uint64_t end, uint8_t pattern) 
  */
 static int execute_operation(OperationType operation, uint8_t pattern) {
     uint64_t start_dpa = 0;
-    uint64_t end_dpa = g_state.test_size;
+    uint64_t end_dpa = g_state.memory_size;
 
     switch (operation) {
         case WR_ASC_ASC:
@@ -421,7 +419,7 @@ static int execute_operation(OperationType operation, uint8_t pattern) {
 
 /* ========== Public API Implementation ========== */
 
-int ma_init(const char* devdax_path, size_t memory_size_mb, double sampling_rate) {
+int ma_init(const char* devdax_path, size_t memory_size_mb) {
     if (g_state.initialized) {
         set_error("Memory Agent already initialized");
         return -1;
@@ -438,17 +436,13 @@ int ma_init(const char* devdax_path, size_t memory_size_mb, double sampling_rate
     /* Save configuration */
     strncpy(g_state.devdax_path, devdax_path, sizeof(g_state.devdax_path) - 1);
     g_state.memory_size = memory_size_mb * 1024UL * 1024UL;
-    g_state.sampling_rate = sampling_rate;
-    g_state.test_size = (size_t)(g_state.memory_size * sampling_rate);
     g_state.baseline_volatile = 0;
     g_state.baseline_persistent = 0;
     g_state.initialized = 1;
 
     printf("Memory Agent initialized:\n");
     printf("  Device: %s\n", devdax_path);
-    printf("  Memory size: %zu MB\n", memory_size_mb);
-    printf("  Sampling rate: %.2f%%\n", sampling_rate * 100.0);
-    printf("  Test size: %zu bytes\n", g_state.test_size);
+    printf("  Memory size: %zu MB (%zu bytes)\n", memory_size_mb, g_state.memory_size);
 
     return 0;
 }

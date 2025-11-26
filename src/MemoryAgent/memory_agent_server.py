@@ -155,9 +155,7 @@ def main():
     parser.add_argument('--devdax', default='/dev/dax0.0',
                         help='devdax device path')
     parser.add_argument('--memory-size', type=int, default=1024,
-                        help='Memory size in MB')
-    parser.add_argument('--sampling-rate', type=float, default=0.01,
-                        help='Memory sampling rate (0.01 = 1%%)')
+                        help='Memory size in MB (entire memory will be tested)')
     parser.add_argument('--debug', action='store_true',
                         help='Enable debug logging')
 
@@ -180,7 +178,7 @@ def main():
     logging.info(f"Server: {args.host}:{args.port}")
     logging.info(f"devdax: {args.devdax}")
     logging.info(f"Memory size: {args.memory_size} MB")
-    logging.info(f"Sampling rate: {args.sampling_rate * 100:.2f}%")
+    logging.info(f"Test coverage: 100% (entire memory)")
     logging.info("="*60)
 
     # Initialize Memory Agent C library
@@ -188,8 +186,7 @@ def main():
         logging.info("Initializing Memory Agent C library...")
         memory_agent.init(
             devdax_path=args.devdax,
-            memory_size_mb=args.memory_size,
-            sampling_rate=args.sampling_rate
+            memory_size_mb=args.memory_size
         )
         logging.info("Memory Agent initialized successfully!")
     except Exception as e:

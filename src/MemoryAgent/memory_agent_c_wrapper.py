@@ -107,7 +107,7 @@ class MemoryAgentC:
 
     Usage:
         agent = MemoryAgentC()
-        agent.init("/dev/dax0.0", memory_size_mb=1024, sampling_rate=0.01)
+        agent.init("/dev/dax0.0", memory_size_mb=1024)
 
         # Execute action
         ce_info, success = agent.execute_action(512)
@@ -134,8 +134,8 @@ class MemoryAgentC:
     def _setup_function_signatures(self):
         """Setup C function signatures"""
 
-        # int ma_init(const char* devdax_path, size_t memory_size_mb, double sampling_rate)
-        self.lib.ma_init.argtypes = [c_char_p, c_size_t, c_double]
+        # int ma_init(const char* devdax_path, size_t memory_size_mb)
+        self.lib.ma_init.argtypes = [c_char_p, c_size_t]
         self.lib.ma_init.restype = c_int
 
         # int ma_execute_action(int action, ActionResult* result)
@@ -167,23 +167,20 @@ class MemoryAgentC:
         self.lib.ma_is_initialized.restype = c_int
 
     def init(self, devdax_path: str = "/dev/dax0.0",
-             memory_size_mb: int = 1024,
-             sampling_rate: float = 0.01) -> bool:
+             memory_size_mb: int = 1024) -> bool:
         """
         Initialize Memory Agent
 
         Args:
             devdax_path: Path to devdax device
-            memory_size_mb: Memory size in MB
-            sampling_rate: Fraction of memory to test (0.0-1.0)
+            memory_size_mb: Memory size in MB (entire memory will be tested)
 
         Returns:
             True if successful, False otherwise
         """
         result = self.lib.ma_init(
             devdax_path.encode('utf-8'),
-            memory_size_mb,
-            sampling_rate
+            memory_size_mb
         )
 
         if result == 0:
@@ -322,6 +319,6 @@ if __name__ == "__main__":
     print("\nWrapper test completed!")
     print("\nNote: Full test requires initialization with devdax device.")
     print("To test on real hardware:")
-    print("  agent.init('/dev/dax0.0', memory_size_mb=1024, sampling_rate=0.01)")
+    print("  agent.init('/dev/dax0.0', memory_size_mb=1024)")
     print("  ce_info, success = agent.execute_action(512)")
     print("  agent.cleanup()")
