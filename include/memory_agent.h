@@ -62,7 +62,7 @@ typedef struct {
  * @param sampling_rate Fraction of memory to test (0.0-1.0)
  * @return 0 on success, -1 on error
  */
-int ma_init(const char* devdax_path, size_t memory_size_mb, double sampling_rate);
+int ma_init(const char* devdax_path, size_t memory_size_mb);
 
 /**
  * @brief Execute memory test action
