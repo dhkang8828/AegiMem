@@ -1,7 +1,7 @@
 # Makefile for Memory Agent C Library
 
 CC = gcc
-CFLAGS = -Wall -Wextra -O2 -fPIC -I../../include
+CFLAGS = -Wall -Wextra -O2 -fPIC -I../../include -D_GNU_SOURCE
 LDFLAGS = -shared -pthread
 
 # Targets
