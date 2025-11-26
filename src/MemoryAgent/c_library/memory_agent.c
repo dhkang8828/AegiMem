@@ -12,6 +12,12 @@
 #include <unistd.h>
 #include <sys/mman.h>
 #include <errno.h>
+#include <pthread.h>
+#include <sched.h>
+
+/* ========== Multi-threading Configuration ========== */
+#define NUM_THREADS 16
+#define ALIGN_SIZE (2 * 1024 * 1024)  /* 2MB alignment */>
 
 /* ========== Global State ========== */
 
@@ -367,51 +373,188 @@ static int write_read_descending(uint64_t start, uint64_t end, uint8_t pattern) 
     return 0;
 }
 
-/**
- * @brief Execute memory operation
- */
-static int execute_operation(OperationType operation, uint8_t pattern) {
-    uint64_t start_dpa = 0;
-    uint64_t end_dpa = g_state.memory_size;
+/* ========== Multi-threading Support ========== */
 
-    switch (operation) {
+typedef struct {
+    int thread_id;
+    int core_id;
+    uint64_t start_dpa;
+    uint64_t end_dpa;
+    OperationType operation;
+    uint8_t pattern;
+    int result;
+    char error_msg[256];
+} ThreadTask;
+
+/**
+ * @brief Set CPU affinity for current thread
+ */
+static int set_cpu_affinity(int core_id) {
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    CPU_SET(core_id, &cpuset);
+
+    if (pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset) != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+/**
+ * @brief Worker thread function
+ */
+static void* thread_worker(void* arg) {
+    ThreadTask* task = (ThreadTask*)arg;
+
+    /* Set CPU affinity to designated core */
+    if (set_cpu_affinity(task->core_id) < 0) {
+        snprintf(task->error_msg, sizeof(task->error_msg),
+                 "Failed to set CPU affinity to core %d", task->core_id);
+        task->result = -1;
+        return NULL;
+    }
+
+    /* Execute operation on assigned memory region */
+    switch (task->operation) {
         case WR_ASC_ASC:
-            /* [^(W pat), ^(R pat)] - Ascending write, ascending read */
-            if (write_ascending(start_dpa, end_dpa, pattern) < 0) return -1;
-            if (read_ascending(start_dpa, end_dpa, pattern) < 0) return -1;
+            if (write_ascending(task->start_dpa, task->end_dpa, task->pattern) < 0) {
+                snprintf(task->error_msg, sizeof(task->error_msg), "write_ascending failed");
+                task->result = -1;
+                return NULL;
+            }
+            if (read_ascending(task->start_dpa, task->end_dpa, task->pattern) < 0) {
+                snprintf(task->error_msg, sizeof(task->error_msg), "read_ascending failed");
+                task->result = -1;
+                return NULL;
+            }
             break;
 
         case WR_DESC_DESC:
-            /* [v(W pat), v(R pat)] - Descending write, descending read */
-            if (write_descending(start_dpa, end_dpa, pattern) < 0) return -1;
-            if (read_descending(start_dpa, end_dpa, pattern) < 0) return -1;
+            if (write_descending(task->start_dpa, task->end_dpa, task->pattern) < 0) {
+                snprintf(task->error_msg, sizeof(task->error_msg), "write_descending failed");
+                task->result = -1;
+                return NULL;
+            }
+            if (read_descending(task->start_dpa, task->end_dpa, task->pattern) < 0) {
+                snprintf(task->error_msg, sizeof(task->error_msg), "read_descending failed");
+                task->result = -1;
+                return NULL;
+            }
             break;
 
         case WR_ASC_DESC:
-            /* [^(W pat), v(R pat)] - Ascending write, descending read */
-            if (write_ascending(start_dpa, end_dpa, pattern) < 0) return -1;
-            if (read_descending(start_dpa, end_dpa, pattern) < 0) return -1;
+            if (write_ascending(task->start_dpa, task->end_dpa, task->pattern) < 0) {
+                snprintf(task->error_msg, sizeof(task->error_msg), "write_ascending failed");
+                task->result = -1;
+                return NULL;
+            }
+            if (read_descending(task->start_dpa, task->end_dpa, task->pattern) < 0) {
+                snprintf(task->error_msg, sizeof(task->error_msg), "read_descending failed");
+                task->result = -1;
+                return NULL;
+            }
             break;
 
         case WR_DESC_ASC:
-            /* [v(W pat), ^(R pat)] - Descending write, ascending read */
-            if (write_descending(start_dpa, end_dpa, pattern) < 0) return -1;
-            if (read_ascending(start_dpa, end_dpa, pattern) < 0) return -1;
+            if (write_descending(task->start_dpa, task->end_dpa, task->pattern) < 0) {
+                snprintf(task->error_msg, sizeof(task->error_msg), "write_descending failed");
+                task->result = -1;
+                return NULL;
+            }
+            if (read_ascending(task->start_dpa, task->end_dpa, task->pattern) < 0) {
+                snprintf(task->error_msg, sizeof(task->error_msg), "read_ascending failed");
+                task->result = -1;
+                return NULL;
+            }
             break;
 
         case WR_DESC_SINGLE:
-            /* [v(W pat, R pat)] - Descending single-pass */
-            if (write_read_descending(start_dpa, end_dpa, pattern) < 0) return -1;
+            if (write_read_descending(task->start_dpa, task->end_dpa, task->pattern) < 0) {
+                snprintf(task->error_msg, sizeof(task->error_msg), "write_read_descending failed");
+                task->result = -1;
+                return NULL;
+            }
             break;
 
         case WR_ASC_SINGLE:
-            /* [^(W pat, R pat)] - Ascending single-pass */
-            if (write_read_ascending(start_dpa, end_dpa, pattern) < 0) return -1;
+            if (write_read_ascending(task->start_dpa, task->end_dpa, task->pattern) < 0) {
+                snprintf(task->error_msg, sizeof(task->error_msg), "write_read_ascending failed");
+                task->result = -1;
+                return NULL;
+            }
             break;
 
         default:
-            set_error("Invalid operation type: %d", operation);
+            snprintf(task->error_msg, sizeof(task->error_msg),
+                     "Invalid operation type: %d", task->operation);
+            task->result = -1;
+            return NULL;
+    }
+
+    task->result = 0;
+    return NULL;
+}
+
+/**
+ * @brief Execute memory operation with multi-threading (16 threads, 16 cores)
+ */
+static int execute_operation(OperationType operation, uint8_t pattern) {
+    pthread_t threads[NUM_THREADS];
+    ThreadTask tasks[NUM_THREADS];
+
+    uint64_t total_size = g_state.memory_size;
+    uint64_t chunk_size = total_size / NUM_THREADS;
+
+    /* Align chunk_size to 2MB boundary */
+    chunk_size = (chunk_size / ALIGN_SIZE) * ALIGN_SIZE;
+    if (chunk_size == 0) {
+        chunk_size = ALIGN_SIZE;
+    }
+
+    /* Create threads and assign memory regions */
+    for (int i = 0; i < NUM_THREADS; i++) {
+        tasks[i].thread_id = i;
+        tasks[i].core_id = i;  /* Core 0-15 */
+        tasks[i].start_dpa = i * chunk_size;
+
+        /* Last thread handles remaining memory */
+        if (i == NUM_THREADS - 1) {
+            tasks[i].end_dpa = total_size;
+        } else {
+            tasks[i].end_dpa = (i + 1) * chunk_size;
+        }
+
+        tasks[i].operation = operation;
+        tasks[i].pattern = pattern;
+        tasks[i].result = 0;
+        tasks[i].error_msg[0] = '\0';
+
+        if (pthread_create(&threads[i], NULL, thread_worker, &tasks[i]) != 0) {
+            set_error("Failed to create thread %d: %s", i, strerror(errno));
+
+            /* Wait for already created threads */
+            for (int j = 0; j < i; j++) {
+                pthread_join(threads[j], NULL);
+            }
             return -1;
+        }
+    }
+
+    /* Wait for all threads to complete */
+    int has_error = 0;
+    for (int i = 0; i < NUM_THREADS; i++) {
+        pthread_join(threads[i], NULL);
+
+        if (tasks[i].result != 0) {
+            set_error("Thread %d (core %d) failed: %s",
+                     tasks[i].thread_id, tasks[i].core_id, tasks[i].error_msg);
+            has_error = 1;
+            /* Continue joining other threads */
+        }
+    }
+
+    if (has_error) {
+        return -1;
     }
 
     return 0;

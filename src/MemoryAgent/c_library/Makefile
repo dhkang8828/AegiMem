@@ -2,7 +2,7 @@
 
 CC = gcc
 CFLAGS = -Wall -Wextra -O2 -fPIC -I../../include
-LDFLAGS = -shared
+LDFLAGS = -shared -pthread
 
 # Targets
 TARGET = libmemory_agent.so
