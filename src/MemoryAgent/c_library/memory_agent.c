@@ -14,6 +14,7 @@
 #include <errno.h>
 #include <pthread.h>
 #include <sched.h>
+#include <immintrin.h>  /* For _mm_clflush, _mm_mfence */
 
 /* ========== Multi-threading Configuration ========== */
 #define NUM_THREADS 16
@@ -139,7 +140,13 @@ static int write_ascending(uint64_t start, uint64_t end, uint8_t pattern) {
         memset(ptr + i, pattern, 64);
     }
 
-    /* Ensure writes are flushed */
+    /* Flush CPU cache to ensure DRAM write */
+    for (size_t i = offset_start; i < offset_end; i += 64) {
+        _mm_clflush(ptr + i);
+    }
+    _mm_mfence();  /* Memory fence to ensure ordering */
+
+    /* Ensure writes are flushed to device */
     msync(mapped, map_size, MS_SYNC);
 
     munmap(mapped, map_size);
@@ -182,7 +189,16 @@ static int write_descending(uint64_t start, uint64_t end, uint8_t pattern) {
         if (i == offset_start) break;  /* Prevent underflow */
     }
 
+    /* Flush CPU cache to ensure DRAM write */
+    for (size_t i = offset_end - 64; i >= offset_start; i -= 64) {
+        _mm_clflush(ptr + i);
+        if (i == offset_start) break;
+    }
+    _mm_mfence();  /* Memory fence to ensure ordering */
+
+    /* Ensure writes are flushed to device */
     msync(mapped, map_size, MS_SYNC);
+
     munmap(mapped, map_size);
     return 0;
 }
@@ -211,16 +227,23 @@ static int read_ascending(uint64_t start, uint64_t end, uint8_t expected_pattern
         return -1;
     }
 
-    /* Read pattern from the mapped region in ascending order */
-    volatile uint8_t* ptr = (volatile uint8_t*)mapped;
+    /* Invalidate CPU cache before reading to ensure DRAM read */
+    uint8_t* ptr = (uint8_t*)mapped;
     size_t offset_start = start - aligned_start;
     size_t offset_end = (end - aligned_start < map_size) ?
                         (end - aligned_start) : map_size;
 
+    for (size_t i = offset_start; i < offset_end; i += 64) {
+        _mm_clflush(ptr + i);  /* Invalidate cache line */
+    }
+    _mm_mfence();  /* Ensure cache invalidation completes */
+
+    /* Read pattern from the mapped region in ascending order */
+    volatile uint8_t* vptr = (volatile uint8_t*)ptr;
     uint8_t dummy;
     for (size_t i = offset_start; i < offset_end; i += 64) {
-        /* Force read from memory - CE detector will catch errors */
-        dummy = ptr[i];
+        /* Force read from DRAM - CE detector will catch errors */
+        dummy = vptr[i];
         (void)dummy;
     }
 
@@ -253,18 +276,28 @@ static int read_descending(uint64_t start, uint64_t end, uint8_t expected_patter
         return -1;
     }
 
-    /* Read pattern from the mapped region in descending order */
-    volatile uint8_t* ptr = (volatile uint8_t*)mapped;
+    /* Invalidate CPU cache before reading to ensure DRAM read */
+    uint8_t* ptr = (uint8_t*)mapped;
     size_t offset_start = start - aligned_start;
     size_t offset_end = (end - aligned_start < map_size) ?
                         (end - aligned_start) : map_size;
 
+    if (offset_end >= 64) {
+        for (size_t i = offset_end - 64; ; i -= 64) {
+            _mm_clflush(ptr + i);  /* Invalidate cache line */
+            if (i <= offset_start || i < 64) break;
+        }
+    }
+    _mm_mfence();  /* Ensure cache invalidation completes */
+
+    /* Read pattern from the mapped region in descending order */
+    volatile uint8_t* vptr = (volatile uint8_t*)ptr;
     uint8_t dummy;
     /* Descending order - need to handle underflow carefully */
     if (offset_end >= 64) {
         for (size_t i = offset_end - 64; ; i -= 64) {
-            /* Force read from memory - CE detector will catch errors */
-            dummy = ptr[i];
+            /* Force read from DRAM - CE detector will catch errors */
+            dummy = vptr[i];
             (void)dummy;
 
             if (i <= offset_start || i < 64) break;  /* Prevent underflow */
@@ -299,7 +332,7 @@ static int write_read_ascending(uint64_t start, uint64_t end, uint8_t pattern) {
         return -1;
     }
 
-    volatile uint8_t* ptr = (volatile uint8_t*)mapped;
+    uint8_t* ptr = (uint8_t*)mapped;
     size_t offset_start = start - aligned_start;
     size_t offset_end = (end - aligned_start < map_size) ?
                         (end - aligned_start) : map_size;
@@ -308,14 +341,23 @@ static int write_read_ascending(uint64_t start, uint64_t end, uint8_t pattern) {
     /* Write and immediately read back in ascending order */
     for (size_t i = offset_start; i < offset_end; i += 64) {
         /* Write pattern */
-        memset((void*)(ptr + i), pattern, 64);
+        memset(ptr + i, pattern, 64);
 
-        /* Read back immediately - CE detector will catch errors */
-        dummy = ptr[i];
+        /* Flush to DRAM */
+        _mm_clflush(ptr + i);
+        _mm_mfence();
+
+        /* Invalidate cache and read back from DRAM */
+        _mm_clflush(ptr + i);
+        _mm_mfence();
+
+        /* Read back - CE detector will catch errors */
+        volatile uint8_t* vptr = (volatile uint8_t*)(ptr + i);
+        dummy = vptr[0];
         (void)dummy;
     }
 
-    /* Ensure writes are flushed */
+    /* Ensure writes are flushed to device */
     msync(mapped, map_size, MS_SYNC);
 
     munmap(mapped, map_size);
@@ -346,7 +388,7 @@ static int write_read_descending(uint64_t start, uint64_t end, uint8_t pattern) 
         return -1;
     }
 
-    volatile uint8_t* ptr = (volatile uint8_t*)mapped;
+    uint8_t* ptr = (uint8_t*)mapped;
     size_t offset_start = start - aligned_start;
     size_t offset_end = (end - aligned_start < map_size) ?
                         (end - aligned_start) : map_size;
@@ -356,17 +398,26 @@ static int write_read_descending(uint64_t start, uint64_t end, uint8_t pattern) 
     if (offset_end >= 64) {
         for (size_t i = offset_end - 64; ; i -= 64) {
             /* Write pattern */
-            memset((void*)(ptr + i), pattern, 64);
+            memset(ptr + i, pattern, 64);
 
-            /* Read back immediately - CE detector will catch errors */
-            dummy = ptr[i];
+            /* Flush to DRAM */
+            _mm_clflush(ptr + i);
+            _mm_mfence();
+
+            /* Invalidate cache and read back from DRAM */
+            _mm_clflush(ptr + i);
+            _mm_mfence();
+
+            /* Read back - CE detector will catch errors */
+            volatile uint8_t* vptr = (volatile uint8_t*)(ptr + i);
+            dummy = vptr[0];
             (void)dummy;
 
             if (i <= offset_start || i < 64) break;  /* Prevent underflow */
         }
     }
 
-    /* Ensure writes are flushed */
+    /* Ensure writes are flushed to device */
     msync(mapped, map_size, MS_SYNC);
 
     munmap(mapped, map_size);
