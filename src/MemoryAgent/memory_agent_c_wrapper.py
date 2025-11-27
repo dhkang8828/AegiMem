@@ -14,7 +14,7 @@ from dataclasses import dataclass
 def _find_library():
     """Find libmemory_agent.so"""
     possible_paths = [
-        "./src/c_library/libmemory_agent.so",
+        "./c_library/libmemory_agent.so",
         "./libmemory_agent.so",
         "/usr/local/lib/libmemory_agent.so",
     ]
