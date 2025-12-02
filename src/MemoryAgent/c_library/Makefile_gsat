@@ -1,0 +1,35 @@
+# Makefile for GSAT-like Memory Agent Library
+
+CC = gcc
+CFLAGS = -Wall -O3 -fPIC -pthread -D_GNU_SOURCE
+LDFLAGS = -shared -lpthread
+
+TARGET = libgsat_memory_agent.so
+SRC = gsat_like_memory_agent.c
+OBJ = $(SRC:.c=.o)
+
+.PHONY: all clean install
+
+all: $(TARGET)
+
+$(TARGET): $(OBJ)
+	$(CC) $(LDFLAGS) -o $@ $^
+	@echo "Built: $(TARGET)"
+	@echo "Usage: gcc -shared -fPIC -O3 -o $(TARGET) $(SRC) -lpthread -D_GNU_SOURCE"
+
+%.o: %.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+clean:
+	rm -f $(TARGET) $(OBJ)
+	@echo "Cleaned"
+
+install:
+	cp $(TARGET) /usr/local/lib/
+	ldconfig
+	@echo "Installed to /usr/local/lib/"
+
+# Quick build command
+quick:
+	$(CC) -shared -fPIC -O3 -o $(TARGET) $(SRC) -lpthread -D_GNU_SOURCE
+	@echo "Quick build complete: $(TARGET)"

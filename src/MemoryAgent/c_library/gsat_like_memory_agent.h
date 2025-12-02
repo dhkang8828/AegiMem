@@ -4,11 +4,26 @@
 #include <stdint.h>
 #include <stddef.h>
 
-/* * Operation Types (StressAppTest Style)
+/**
+ * GSAT-like Memory Agent (StressAppTest Style)
+ *
+ * Action Space: 64 actions (4 operations × 16 key patterns)
+ *
+ * Operation Types:
  * 0: FILL   - Thermal stress (Solid write)
- * 1: INVERT - Switching noise (Write -> Invert -> Write) [RECOMMENDED]
+ * 1: INVERT - Switching noise (Write -> Invert -> Write) [RECOMMENDED for CE]
  * 2: COPY   - Bandwidth saturation (Memcpy halves)
  * 3: CHECK  - Read disturb (Read only)
+ *
+ * Key Patterns (16 patterns from StressAppTest):
+ * 0x00, 0xFF, 0x55, 0xAA, 0xF0, 0x0F, 0xCC, 0x33,
+ * 0x01, 0x80, 0x16, 0xB5, 0x4A, 0x57, 0x02, 0xFD
+ *
+ * Action Encoding: action = operation_id * 16 + pattern_id
+ * Example:
+ *   action=0:  FILL with 0x00
+ *   action=17: INVERT with 0x55 (highly recommended for CE detection)
+ *   action=63: CHECK with 0xFD
  */
 typedef enum {
     OP_FILL   = 0,

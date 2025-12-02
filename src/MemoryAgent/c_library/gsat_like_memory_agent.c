@@ -21,6 +21,28 @@
 #define NUM_THREADS 16              /* GNR-SP CPU 코어 수에 맞게 조정 */
 #define ALIGN_SIZE (2 * 1024 * 1024) /* 2MB Hugepage Alignment */
 #define STRESS_DURATION_SEC 5       /* Action 1회당 5초 지속 부하 */
+#define NUM_KEY_PATTERNS 16         /* StressAppTest 기반 핵심 패턴 개수 */
+
+/* ========== StressAppTest Key Patterns ========== */
+/* Based on Google StressAppTest: https://github.com/stressapptest/stressapptest */
+static const uint8_t KEY_PATTERNS[NUM_KEY_PATTERNS] = {
+    0x00,  /* All zeros */
+    0xFF,  /* All ones */
+    0x55,  /* 01010101 - Checkerboard A */
+    0xAA,  /* 10101010 - Checkerboard B */
+    0xF0,  /* 11110000 */
+    0x0F,  /* 00001111 */
+    0xCC,  /* 11001100 */
+    0x33,  /* 00110011 */
+    0x01,  /* Walking ones start */
+    0x80,  /* Walking ones end */
+    0x16,  /* 8b10b low transition density */
+    0xB5,  /* 8b10b high transition density */
+    0x4A,  /* Checker pattern */
+    0x57,  /* Edge case 1 */
+    0x02,  /* Edge case 2 */
+    0xFD   /* Edge case 3 */
+};
 
 /* ========== Global State ========== */
 typedef struct {
@@ -206,10 +228,16 @@ int ma_init(const char* devdax_path, size_t memory_size_mb) {
 
 int ma_execute_action(int action, ActionResult* result) {
     if (!g_state.initialized) { set_error("Not initialized"); return -1; }
-    
-    /* Decode Action (0-1023) */
-    OperationType operation = (OperationType)(action / 256);
-    uint8_t pattern = (uint8_t)(action % 256);
+
+    /* Decode Action (0-63): 4 operations × 16 patterns = 64 actions */
+    if (action < 0 || action >= 64) {
+        set_error("Invalid action: %d (must be 0-63)", action);
+        return -1;
+    }
+
+    OperationType operation = (OperationType)(action / NUM_KEY_PATTERNS);
+    int pattern_idx = action % NUM_KEY_PATTERNS;
+    uint8_t pattern = KEY_PATTERNS[pattern_idx];
 
     ma_reset_baseline();
 
