@@ -1,9 +1,9 @@
 /**
- * @file memory_agent.c
- * @brief Memory Agent Implementation (StressAppTest Style)
+ * @file gsat_like_memory_agent.c
+ * @brief GSAT-like Memory Agent Implementation (StressAppTest Style)
  */
 
-#include "memory_agent.h"
+#include "gsat_like_memory_agent.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

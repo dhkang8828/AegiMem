@@ -1,5 +1,5 @@
-#ifndef MEMORY_AGENT_H
-#define MEMORY_AGENT_H
+#ifndef GSAT_MEMORY_AGENT_H
+#define GSAT_MEMORY_AGENT_H
 
 #include <stdint.h>
 #include <stddef.h>
@@ -57,4 +57,4 @@ void ma_cleanup(void);
 const char* ma_get_error(void);
 int ma_is_initialized(void);
 
-#endif // MEMORY_AGENT_H
+#endif // GSAT_MEMORY_AGENT_H
